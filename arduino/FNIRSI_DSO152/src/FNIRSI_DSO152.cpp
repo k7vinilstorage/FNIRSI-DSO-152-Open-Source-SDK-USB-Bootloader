@@ -90,47 +90,9 @@ static void _dso152_early_boot_hook(void) {
 extern "C" {
 void hw_config_init(void);
 
-// Override STM32duino's weak Reset_Handler so that even if a 48KB/64KB SRAM board
-// variant is selected (or cached by Arduino IDE), MSP is clamped to 0x20004FF0
-// (within the DSO-152's physical 20 KB SRAM, below the 0x20004FFC bootloader key)
-// BEFORE the very first stack push instruction!
-__attribute__((naked)) void Reset_Handler(void) {
-    __asm__ volatile (
-        ".syntax unified            \n"
-        "ldr r0, =0x20004FF0        \n"
-        "mov r1, sp                 \n"
-        "cmp r1, r0                 \n"
-        "it hi                      \n"
-        "movhi sp, r0               \n"
-        "bl SystemInit              \n"
-        "ldr r0, =_sdata            \n"
-        "ldr r1, =_edata            \n"
-        "ldr r2, =_sidata           \n"
-        "movs r3, #0                \n"
-        "b 2f                       \n"
-        "1:                         \n"
-        "ldr r4, [r2, r3]           \n"
-        "str r4, [r0, r3]           \n"
-        "adds r3, r3, #4            \n"
-        "2:                         \n"
-        "adds r4, r0, r3            \n"
-        "cmp r4, r1                 \n"
-        "bcc 1b                     \n"
-        "ldr r2, =_sbss             \n"
-        "ldr r4, =_ebss             \n"
-        "movs r3, #0                \n"
-        "b 4f                       \n"
-        "3:                         \n"
-        "str r3, [r2]               \n"
-        "adds r2, r2, #4            \n"
-        "4:                         \n"
-        "cmp r2, r4                 \n"
-        "bcc 3b                     \n"
-        "bl __libc_init_array       \n"
-        "bl main                    \n"
-        "bx lr                      \n"
-    );
-}
+// Pull in g_pfnVectors (.isr_vector) from startup_stm32yyxx.S.o
+extern const void* g_pfnVectors[] __attribute__((weak));
+void __attribute__((used)) _pull_isr_vector(void) { (void)g_pfnVectors; }
 
 // Override STM32duino's weak init() so VTOR and PC10 power latch are configured
 // strictly BEFORE hw_config_init() / HAL_Init() enables SysTick interrupts.
