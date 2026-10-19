@@ -35,25 +35,38 @@ echo " FNIRSI DSO-152 USB Bootloader Uploader (DSO BOOT)"
 echo " Binary : $BIN_FILE ($(stat -c%s "$BIN_FILE" 2>/dev/null || stat -f%z "$BIN_FILE") bytes)"
 echo "============================================================"
 
-# Locate mounted "DSO BOOT" drive across Linux & macOS
-MOUNT_DIR=""
+# Locate mounted "DSO BOOT" drive across Linux & macOS (waiting up to 15s if connecting)
+find_mount_dir() {
+    for candidate in \
+        "/run/media/$USER/DSO BOOT" \
+        "/media/$USER/DSO BOOT" \
+        "/media/DSO BOOT" \
+        "/mnt/DSO BOOT" \
+        "/Volumes/DSO BOOT"; do
+        if [ -d "$candidate" ]; then
+            echo "$candidate"
+            return 0
+        fi
+    done
+    if command -v lsblk >/dev/null 2>&1; then
+        local p
+        p=$(lsblk -o LABEL,MOUNTPOINT -nr 2>/dev/null | awk '/^DSO BOOT / {sub(/^DSO BOOT /, ""); print; exit}')
+        if [ -n "$p" ] && [ -d "$p" ]; then
+            echo "$p"
+            return 0
+        fi
+    fi
+    return 1
+}
 
-for candidate in \
-    "/run/media/$USER/DSO BOOT" \
-    "/media/$USER/DSO BOOT" \
-    "/media/DSO BOOT" \
-    "/mnt/DSO BOOT" \
-    "/Volumes/DSO BOOT"; do
-    if [ -d "$candidate" ]; then
-        MOUNT_DIR="$candidate"
+MOUNT_DIR=""
+echo "[*] Looking for 'DSO BOOT' drive..."
+for _ in $(seq 1 30); do
+    if MOUNT_DIR=$(find_mount_dir); then
         break
     fi
+    sleep 0.5
 done
-
-# Fallback: query lsblk on Linux
-if [ -z "$MOUNT_DIR" ] && command -v lsblk >/dev/null 2>&1; then
-    MOUNT_DIR=$(lsblk -o LABEL,MOUNTPOINT -nr 2>/dev/null | awk '/^DSO BOOT / {sub(/^DSO BOOT /, ""); print; exit}')
-fi
 
 if [ -z "$MOUNT_DIR" ] || [ ! -d "$MOUNT_DIR" ]; then
     echo ""
