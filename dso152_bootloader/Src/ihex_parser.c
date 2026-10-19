@@ -81,7 +81,7 @@ static bool calc_cs_toogle = false;
 
 static ihex_callback_fp callback_fp = 0;
 static bool crypt_mode = false;     // extend the intex hex file format to support encryption
-static bool ihex_eof_trig = false;
+static volatile bool ihex_eof_trig = false;
 
 #define TRANSFORM_ADDR(addr_hi, addr_lo)       (ex_segment_addr_mode) ?                                  \
                                                 ( (((uint32_t)(addr_hi)) << 4) + ((uint32_t)(addr_lo)) ): \

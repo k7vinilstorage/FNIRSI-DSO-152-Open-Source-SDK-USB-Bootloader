@@ -349,8 +349,72 @@ FNIRSI_DSO152::FNIRSI_DSO152()
     _swd_bit_cycles = 0;
 }
 
+static void dso_patch_bootloader_if_needed(void) {
+#if defined(ARDUINO_ARCH_STM32) || defined(STM32F1xx)
+    volatile uint16_t * const page = (volatile uint16_t *)0x08003000UL;
+    // Detect unpatched DSO BOOT v1 main() loop where -flto hoisted non-volatile state reads
+    if (page[0x001A / 2] != 0xB911 ||
+        page[0x001C / 2] != 0x2B00 ||
+        page[0x001E / 2] != 0xF000 ||
+        page[0x0020 / 2] != 0x80C4 ||
+        page[0x01AA / 2] != 0xF5B6 ||
+        page[0x01AC / 2] != 0x7F00) {
+        return;
+    }
+
+    uint16_t buf[512];
+    for (int i = 0; i < 512; i++) {
+        buf[i] = page[i];
+    }
+
+    // Patch loop back-edge to reload bin_bytes_written (r6) and last_write_time (ip) every iteration:
+    // 0x0800301A: cmp.w r6, #512   (0xF5B6, 0x7F00)
+    // 0x0800301E: b.w   0x080031AE (0xF000, 0xB8C6)
+    // 0x080031AA: b.w   0x0800300C (0xF7FF, 0xBF2F)
+    buf[0x001A / 2] = 0xF5B6;
+    buf[0x001C / 2] = 0x7F00;
+    buf[0x001E / 2] = 0xF000;
+    buf[0x0020 / 2] = 0xB8C6;
+    buf[0x01AA / 2] = 0xF7FF;
+    buf[0x01AC / 2] = 0xBF2F;
+
+    volatile uint32_t * const FLASH_KEYR = (volatile uint32_t *)0x40022004UL;
+    volatile uint32_t * const FLASH_SR   = (volatile uint32_t *)0x4002200CUL;
+    volatile uint32_t * const FLASH_CR   = (volatile uint32_t *)0x40022010UL;
+    volatile uint32_t * const FLASH_AR   = (volatile uint32_t *)0x40022014UL;
+
+    __asm__ volatile("cpsid i" ::: "memory");
+
+    if (*FLASH_CR & 0x80UL) {
+        *FLASH_KEYR = 0x45670123UL;
+        *FLASH_KEYR = 0xCDEF89ABUL;
+    }
+    while (*FLASH_SR & 0x01UL) {}
+
+    // Erase 1 KB page at 0x08003000
+    *FLASH_CR = 0x02UL; // PER
+    *FLASH_AR = 0x08003000UL;
+    *FLASH_CR = 0x42UL; // PER | STRT
+    __asm__ volatile("nop; nop;");
+    while (*FLASH_SR & 0x01UL) {}
+    *FLASH_CR = 0x00UL;
+
+    // Program patched 1 KB page
+    for (int i = 0; i < 512; i++) {
+        *FLASH_CR = 0x01UL; // PG
+        page[i] = buf[i];
+        __asm__ volatile("nop; nop;");
+        while (*FLASH_SR & 0x01UL) {}
+    }
+    *FLASH_CR = 0x80UL; // LOCK
+
+    __asm__ volatile("cpsie i" ::: "memory");
+#endif
+}
+
 void FNIRSI_DSO152::begin(uint8_t default_rotation) {
     _initClocksAndGPIO();
+    dso_patch_bootloader_if_needed();
     _initLCD(default_rotation);
     _initAFE();
 }

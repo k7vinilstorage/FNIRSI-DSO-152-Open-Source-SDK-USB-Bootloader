@@ -334,26 +334,30 @@ static void _fat32_read_firmware(uint8_t *b, uint32_t addr)
 #endif
 }
 
-static bool flash_erased = false;
-static bool is_bin_mode = false;
-static uint32_t bin_first_cluster = 0;
-static uint32_t bin_total_size = 0;
-static uint32_t bin_bytes_written = 0;
-static bool bin_flashed = false;
-static uint32_t last_write_time = 0;
+static volatile bool flash_erased = false;
+static volatile bool is_bin_mode = false;
+static volatile uint32_t bin_first_cluster = 0;
+static volatile uint32_t bin_total_size = 0;
+static volatile uint32_t bin_bytes_written = 0;
+static volatile bool bin_flashed = false;
+static volatile uint32_t last_write_time = 0;
 
 bool fat32_is_flashed(void)
 {
+    uint32_t tick = HAL_GetTick();
+    uint32_t last = last_write_time;
+
     // Wait at least 400ms after the last USB sector write so the host OS (Linux vfat)
     // finishes flushing FAT2 / FSInfo sectors before SystemReset() disconnects USB.
-    if ((bin_flashed || ihex_is_eof()) && (HAL_GetTick() - last_write_time > 400))
+    if ((bin_flashed || ihex_is_eof()) && (tick - last > 400))
     {
+        st7789_boot_update_progress(100, 100);
         return true;
     }
 
     // Timeout fallback: if at least 512 bytes were written,
     // and no writes received for >1000ms, check if valid firmware is present in flash
-    if (bin_bytes_written >= 512 && (HAL_GetTick() - last_write_time > 1000))
+    if (bin_bytes_written >= 512 && (tick - last > 1000))
     {
         uint32_t sp = *(volatile uint32_t *)APP_ADDR;
         uint32_t reset_vec = *(volatile uint32_t *)(APP_ADDR + 4);
@@ -361,6 +365,7 @@ bool fat32_is_flashed(void)
             ((reset_vec & 1) == 1) &&
             (reset_vec >= APP_ADDR && reset_vec < (APP_ADDR + APP_SIZE)))
         {
+            st7789_boot_update_progress(100, 100);
             return true;
         }
     }
