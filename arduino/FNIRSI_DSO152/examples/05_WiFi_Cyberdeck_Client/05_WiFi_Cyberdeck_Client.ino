@@ -109,13 +109,26 @@ static void renderDashboardTab() {
 static void renderScannerTab() {
     drawTopBar();
     dso.fillRect(0, 22, 320, 194, COLOR_BLACK);
-    dso.drawString(16, 100, "Calling WiFi.scanNetworks()...", COLOR_CYAN, COLOR_BLACK, 1);
+    bool modemOk = WiFi.isModemReady();
+    dso.drawString(16, 85, modemOk ? "Modem Link: ONLINE (OK|PONG)" : "Modem Link: NO PING REPLY",
+                   modemOk ? COLOR_GREEN : COLOR_YELLOW, COLOR_BLACK, 1);
+    dso.drawString(16, 105, "Calling WiFi.scanNetworks()...", COLOR_CYAN, COLOR_BLACK, 1);
 
     int n = WiFi.scanNetworks();
     dso.fillRect(0, 22, 320, 194, COLOR_BLACK);
 
     if (n <= 0) {
-        dso.drawString(16, 100, "No 2.4 GHz networks found.", COLOR_RED, COLOR_BLACK, 1);
+        if (modemOk) {
+            dso.drawString(12, 60, "ESP32-C3 UART : ONLINE (OK|PONG)", COLOR_GREEN, COLOR_BLACK, 1);
+            dso.drawString(12, 80, ("ESP32 MAC     : " + WiFi.macAddress()).c_str(), COLOR_CYAN, COLOR_BLACK, 1);
+            dso.drawString(12, 110, "No 2.4 GHz networks found.", COLOR_YELLOW, COLOR_BLACK, 1);
+            dso.drawString(12, 130, "Press [OK] or [RUN] to rescan.", COLOR_WHITE, COLOR_BLACK, 1);
+        } else {
+            dso.drawString(12, 55, "ESP32-C3 UART : NO REPLY (Timeout)", COLOR_RED, COLOR_BLACK, 1);
+            dso.drawString(12, 80, "Check wiring: DIO(PA13) -> RX(GPIO20)", COLOR_YELLOW, COLOR_BLACK, 1);
+            dso.drawString(12, 98, "              CLK(PA14) <- TX(GPIO21)", COLOR_YELLOW, COLOR_BLACK, 1);
+            dso.drawString(12, 125, "Press [OK] or [RUN] to retry.", COLOR_WHITE, COLOR_BLACK, 1);
+        }
         return;
     }
 

@@ -2,13 +2,17 @@
  * @file esp32c3_wifi_companion.ino
  * @brief Universal Wi-Fi / HTTPS / TCP / NTP Modem Bridge for FNIRSI DSO-152 (ESP32-C3 SuperMini)
  *
- * FLASH THIS ONCE TO THE ESP32-C3 SUPERMINI AND CLOSE THE CASE!
- * You never need to hardcode Wi-Fi credentials or re-flash the ESP32-C3 again.
+ * FLASH THIS ONCE TO THE ESP32-C3 SUPERMINI!
  * All Wi-Fi connections, scans, HTTP/HTTPS requests, TCP/SSL sockets, and NTP sync
- * are controlled dynamically from your DSO-152 Arduino sketches via <DSO152_WiFi.h>!
+ * are controlled dynamically from your DSO-152 Arduino sketches via <DSO152_WiFi.h>.
  *
- * Arduino IDE Board Settings for ESP32-C3 SuperMini:
- *   - Board: "ESP32C3 Dev Module"
+ * USB Serial Monitor Debug (115200 baud):
+ *   - IMPORTANT: On ESP32-C3 SuperMini, enable Tools -> USB CDC On Boot: "Enabled"
+ *     in the Arduino IDE if you want to view live debug logs over the USB-C port!
+ *   - Prints boot diagnostics, a startup Wi-Fi scan self-test, a 3-second heartbeat,
+ *     and every AT command/response exchanged with the DSO-152.
+ *   - You can also type AT commands (e.g. AT+PING, AT+SCAN, AT+STATUS) directly into
+ *     the Arduino IDE Serial Monitor to test the ESP32-C3 independently.
  *
  * 4-Wire Connection to FNIRSI DSO-152 SWD Pads:
  *   ESP32-C3 SuperMini       DSO-152 SWD Header Pad
@@ -39,6 +43,11 @@ bool portalRunning = false;
 WiFiClient tcpClient;
 WiFiClientSecure sslClient;
 bool activeSocketIsSSL = false;
+
+// Debug counters
+static uint32_t dbgRxBytes   = 0;
+static uint32_t dbgCmdCount  = 0;
+static uint32_t lastBeatMs   = 0;
 
 // ---------------------------------------------------------------------------
 // Hex Encoding / Decoding Helpers
@@ -85,10 +94,33 @@ static String fromHex(const String &hex) {
   return out;
 }
 
+static const char* wifiStatusName(wl_status_t st) {
+  switch (st) {
+    case WL_IDLE_STATUS:     return "WL_IDLE";
+    case WL_NO_SSID_AVAIL:   return "WL_NO_SSID_AVAIL";
+    case WL_SCAN_COMPLETED:  return "WL_SCAN_COMPLETED";
+    case WL_CONNECTED:       return "WL_CONNECTED";
+    case WL_CONNECT_FAILED:  return "WL_CONNECT_FAILED";
+    case WL_CONNECTION_LOST: return "WL_CONNECTION_LOST";
+    case WL_DISCONNECTED:    return "WL_DISCONNECTED";
+    default:                 return "WL_UNKNOWN";
+  }
+}
+
 static void sendReply(const String &line) {
   Serial1.print(line);
   Serial1.print('\n');
+  Serial1.flush();
   digitalWrite(PIN_LED, !digitalRead(PIN_LED));
+
+  Serial.print("[DSO-TX <- ESP32] (");
+  Serial.print(line.length());
+  Serial.print(" bytes): ");
+  if (line.length() > 160) {
+    Serial.println(line.substring(0, 160) + "...");
+  } else {
+    Serial.println(line);
+  }
 }
 
 static String buildStatusString() {
@@ -102,9 +134,58 @@ static String buildStatusString() {
 }
 
 // ---------------------------------------------------------------------------
+// Reliable Wi-Fi Scan Helper (handles stuck STA_CONNECTING state on ESP32-C3)
+// ---------------------------------------------------------------------------
+static int performWiFiScan() {
+  Serial.println("[WIFI-SCAN] Starting 2.4GHz Wi-Fi scan...");
+
+  // Ensure STA interface is enabled
+  if (!portalRunning && WiFi.getMode() != WIFI_STA) {
+    WiFi.mode(WIFI_STA);
+    WiFi.setTxPower(WIFI_POWER_11dBm);
+    delay(50);
+  }
+
+  // CRITICAL on ESP32 Arduino Core: if WiFi.begin() was previously called and is still
+  // trying to connect in the background (status != WL_CONNECTED), WiFi.scanNetworks()
+  // immediately fails with -1 (WIFI_SCAN_FAILED). Disconnect any pending attempt first!
+  if (WiFi.status() != WL_CONNECTED) {
+    WiFi.disconnect(false, false);
+    delay(80);
+  }
+
+  WiFi.scanDelete();
+  uint32_t t0 = millis();
+  // Active scan, show_hidden=false, passive=false, max_ms_per_chan=200ms
+  int n = WiFi.scanNetworks(false, false, false, 200);
+  if (n < 0) {
+    Serial.printf("[WIFI-SCAN] First scan returned %d (busy/failed), resetting STA and retrying...\n", n);
+    WiFi.disconnect(true, false);
+    delay(150);
+    WiFi.mode(portalRunning ? WIFI_AP_STA : WIFI_STA);
+    WiFi.setTxPower(WIFI_POWER_11dBm);
+    delay(100);
+    n = WiFi.scanNetworks(false, false, false, 250);
+  }
+
+  uint32_t dt = millis() - t0;
+  Serial.printf("[WIFI-SCAN] Completed in %lu ms -> found %d networks\n", (unsigned long)dt, n);
+  for (int i = 0; i < n; i++) {
+    Serial.printf("  [%02d] SSID='%s' | RSSI=%d dBm | Ch=%d | Auth=%s\n",
+                  i + 1,
+                  WiFi.SSID(i).c_str(),
+                  (int)WiFi.RSSI(i),
+                  (int)WiFi.channel(i),
+                  (WiFi.encryptionType(i) == WIFI_AUTH_OPEN) ? "OPEN" : "SECURED");
+  }
+  return n;
+}
+
+// ---------------------------------------------------------------------------
 // Captive Web Configuration Portal (http://192.168.4.1)
 // ---------------------------------------------------------------------------
 static void startWebConfigPortal(const String &apSsid) {
+  Serial.printf("[PORTAL] Starting SoftAP '%s' at http://192.168.4.1\n", apSsid.c_str());
   WiFi.mode(WIFI_AP_STA);
   WiFi.setTxPower(WIFI_POWER_11dBm);
   WiFi.softAP(apSsid.c_str());
@@ -126,6 +207,7 @@ static void startWebConfigPortal(const String &apSsid) {
     server.on("/save", HTTP_POST, []() {
       String s = server.arg("s");
       String p = server.arg("p");
+      Serial.printf("[PORTAL] Received credentials via Web UI -> SSID='%s'\n", s.c_str());
       prefs.begin("dso_wifi", false);
       prefs.putString("ssid", s);
       prefs.putString("pass", p);
@@ -144,6 +226,9 @@ static void startWebConfigPortal(const String &apSsid) {
 // Command Dispatcher for <DSO152_WiFi.h>
 // ---------------------------------------------------------------------------
 static void processATCommand(const String &cmd) {
+  dbgCmdCount++;
+  Serial.printf("\n[DSO-RX -> ESP32] Cmd #%lu: '%s'\n", (unsigned long)dbgCmdCount, cmd.c_str());
+
   if (cmd == "AT+PING") {
     sendReply("OK|PONG");
     return;
@@ -166,19 +251,27 @@ static void processATCommand(const String &cmd) {
     String ssid = fromHex(cmd.substring(9, comma));
     String pass = fromHex(cmd.substring(comma + 1));
 
+    Serial.printf("[WIFI] Connecting to SSID='%s'...\n", ssid.c_str());
     prefs.begin("dso_wifi", false);
     prefs.putString("ssid", ssid);
     prefs.putString("pass", pass);
     prefs.end();
 
-    WiFi.mode(WIFI_STA);
+    WiFi.mode(portalRunning ? WIFI_AP_STA : WIFI_STA);
     WiFi.setTxPower(WIFI_POWER_11dBm);
+    WiFi.disconnect(false);
+    delay(50);
     WiFi.begin(ssid.c_str(), pass.c_str());
 
     uint32_t t0 = millis();
     while (WiFi.status() != WL_CONNECTED && (millis() - t0) < 9500) {
       delay(100);
+      Serial.print(".");
     }
+    Serial.println();
+    Serial.printf("[WIFI] Result: %s (IP=%s)\n",
+                  wifiStatusName(WiFi.status()),
+                  WiFi.localIP().toString().c_str());
     sendReply(buildStatusString());
     return;
   }
@@ -190,15 +283,17 @@ static void processATCommand(const String &cmd) {
     prefs.end();
 
     if (ssid.length() == 0) {
+      Serial.println("[WIFI] No saved SSID in NVS preferences.");
       sendReply("ERR|NO_SAVED_WIFI");
       return;
     }
     if (WiFi.status() != WL_CONNECTED) {
-      WiFi.mode(WIFI_STA);
+      Serial.printf("[WIFI] Reconnecting to saved SSID='%s'...\n", ssid.c_str());
+      WiFi.mode(portalRunning ? WIFI_AP_STA : WIFI_STA);
       WiFi.setTxPower(WIFI_POWER_11dBm);
       WiFi.begin(ssid.c_str(), pass.c_str());
       uint32_t t0 = millis();
-      while (WiFi.status() != WL_CONNECTED && (millis() - t0) < 8000) {
+      while (WiFi.status() != WL_CONNECTED && (millis() - t0) < 7500) {
         delay(100);
       }
     }
@@ -226,12 +321,14 @@ static void processATCommand(const String &cmd) {
   }
 
   if (cmd == "AT+SCAN") {
-    int n = WiFi.scanNetworks(false, false);
+    int n = performWiFiScan();
     int count = (n > 10) ? 10 : (n < 0 ? 0 : n);
     String out = "OK|" + String(count) + "|";
     for (int i = 0; i < count; i++) {
+      String ssid = WiFi.SSID(i);
+      if (ssid.length() > 24) ssid = ssid.substring(0, 24);
       int enc = (WiFi.encryptionType(i) == WIFI_AUTH_OPEN) ? 0 : 1;
-      out += toHex(WiFi.SSID(i)) + "," + String(WiFi.RSSI(i)) + "," +
+      out += toHex(ssid) + "," + String(WiFi.RSSI(i)) + "," +
              String(WiFi.channel(i)) + "," + String(enc);
       if (i + 1 < count) out += ";";
     }
@@ -272,6 +369,7 @@ static void processATCommand(const String &cmd) {
 
   if (cmd.startsWith("AT+HTTPGET=")) {
     String url = fromHex(cmd.substring(11));
+    Serial.printf("[HTTP] GET %s\n", url.c_str());
     HTTPClient http;
     WiFiClientSecure secureClient;
     WiFiClient plainClient;
@@ -289,7 +387,7 @@ static void processATCommand(const String &cmd) {
     http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
     int code = http.GET();
     String body = (code > 0) ? http.getString() : "";
-    if (body.length() > 650) body = body.substring(0, 650); // Keep frame compact for STM32 RAM
+    if (body.length() > 650) body = body.substring(0, 650);
     http.end();
     sendReply("OK|" + String(code) + "|" + toHex(body));
     return;
@@ -303,6 +401,7 @@ static void processATCommand(const String &cmd) {
     String ctype = fromHex(cmd.substring(c1 + 1, c2));
     String body  = fromHex(cmd.substring(c2 + 1));
 
+    Serial.printf("[HTTP] POST %s (%u bytes)\n", url.c_str(), (unsigned)body.length());
     HTTPClient http;
     WiFiClientSecure secureClient;
     WiFiClient plainClient;
@@ -333,6 +432,7 @@ static void processATCommand(const String &cmd) {
     uint16_t port = (uint16_t)cmd.substring(c1 + 1, c2).toInt();
     bool ssl = (cmd.substring(c2 + 1).toInt() != 0);
 
+    Serial.printf("[TCP] Connecting to %s:%u (SSL=%d)...\n", host.c_str(), port, (int)ssl);
     tcpClient.stop();
     sslClient.stop();
     activeSocketIsSSL = ssl;
@@ -384,19 +484,83 @@ static void processATCommand(const String &cmd) {
     sendReply("OK");
     return;
   }
+
+  Serial.printf("[WARN] Unrecognized AT command: '%s'\n", cmd.c_str());
+  sendReply("ERR|UNKNOWN_CMD");
+}
+
+static void handleIncomingLine(String line, const char *sourceTag) {
+  line.trim();
+  if (line.length() == 0) return;
+
+  // Tolerate any leading pin-mux/power-on glitch byte before "AT+"
+  int atPos = line.indexOf("AT+");
+  if (atPos >= 0) {
+    if (atPos > 0) {
+      Serial.printf("[%s] Stripped %d leading noise bytes before AT+\n", sourceTag, atPos);
+    }
+    processATCommand(line.substring(atPos));
+    return;
+  }
+
+  int scanPos = line.indexOf("$SCAN");
+  if (scanPos >= 0) {
+    int n = performWiFiScan();
+    String out = "$NETS|";
+    int count = (n > 8) ? 8 : (n < 0 ? 0 : n);
+    for (int i = 0; i < count; i++) {
+      String s = WiFi.SSID(i);
+      s.replace(",", " "); s.replace(";", " ");
+      if (s.length() > 16) s = s.substring(0, 16);
+      out += s + "," + String(WiFi.RSSI(i)) + "," + String(WiFi.channel(i));
+      if (i + 1 < count) out += ";";
+    }
+    WiFi.scanDelete();
+    sendReply(out);
+    return;
+  }
+
+  // Log unexpected/garbled UART input in both ASCII and Hex to diagnose baud/wiring
+  Serial.printf("[%s] Ignored non-AT input (%u bytes): ASCII='%s' HEX=",
+                sourceTag, (unsigned)line.length(), line.c_str());
+  for (size_t i = 0; i < line.length(); i++) {
+    Serial.printf("%02X ", (uint8_t)line[i]);
+  }
+  Serial.println();
 }
 
 void setup() {
   pinMode(PIN_LED, OUTPUT);
-  digitalWrite(PIN_LED, LOW);
+  digitalWrite(PIN_LED, LOW); // LED ON during setup
 
   Serial.begin(115200);
-  Serial1.setRxBufferSize(2048);
-  Serial1.begin(57600, SERIAL_8N1, PIN_DSO_RX, PIN_DSO_TX);
+  // Wait briefly so USB CDC Serial Monitor can attach on boot without blocking standalone operation
+  uint32_t usbWait = millis();
+  while (!Serial && (millis() - usbWait) < 1500) {
+    delay(10);
+  }
 
-  // Automatically reconnect to last saved Wi-Fi if available
+  // Configure Serial1 on GPIO20 (RX <- DSO PA13/DIO) & GPIO21 (TX -> DSO PA14/CLK)
+  // Using SERIAL_8N2 adds an extra stop bit on ESP32 TX so the DSO-152's bit-banged
+  // UART receiver has 34.7us of idle HIGH time between back-to-back bytes!
+  pinMode(PIN_DSO_RX, INPUT_PULLUP);
+  Serial1.setRxBufferSize(2048);
+  Serial1.begin(57600, SERIAL_8N2, PIN_DSO_RX, PIN_DSO_TX);
+
+  Serial.println("\n============================================================");
+  Serial.println(" FNIRSI DSO-152 Wi-Fi Companion Modem (ESP32-C3 SuperMini)");
+  Serial.println("============================================================");
+  Serial.printf(" UART Bridge : 57600 8N2 | RX=GPIO%d (<- DSO DIO/PA13) | TX=GPIO%d (-> DSO CLK/PA14)\n",
+                PIN_DSO_RX, PIN_DSO_TX);
+
   WiFi.mode(WIFI_STA);
   WiFi.setTxPower(WIFI_POWER_11dBm); // Prevents 3.3V LDO brownout on DSO-152!
+  WiFi.setAutoReconnect(false);      // Don't block scans with background reconnect loops
+
+  Serial.printf(" MAC Address : %s\n", WiFi.macAddress().c_str());
+
+  // Run a quick self-test Wi-Fi scan on boot and print to USB Serial
+  performWiFiScan();
 
   prefs.begin("dso_wifi", true);
   String savedSsid = prefs.getString("ssid", "");
@@ -404,36 +568,71 @@ void setup() {
   prefs.end();
 
   if (savedSsid.length() > 0) {
+    Serial.printf("[BOOT] Found saved Wi-Fi SSID='%s', attempting initial connection (4s timeout)...\n",
+                  savedSsid.c_str());
     WiFi.begin(savedSsid.c_str(), savedPass.c_str());
+    uint32_t t0 = millis();
+    while (WiFi.status() != WL_CONNECTED && (millis() - t0) < 4000) {
+      delay(100);
+    }
+    if (WiFi.status() != WL_CONNECTED) {
+      Serial.println("[BOOT] Saved Wi-Fi not in range right now; disconnecting so scanner stays ready.");
+      WiFi.disconnect(false);
+    } else {
+      Serial.printf("[BOOT] Connected! IP=%s\n", WiFi.localIP().toString().c_str());
+    }
+  } else {
+    Serial.println("[BOOT] No saved Wi-Fi in NVS. Ready for commands from DSO-152 or USB Serial.");
   }
 
-  digitalWrite(PIN_LED, HIGH);
+  digitalWrite(PIN_LED, HIGH); // LED OFF (blinks on every packet)
+  lastBeatMs = millis();
 }
+
+static String serial1Buf;
+static String usbSerialBuf;
 
 void loop() {
   if (portalRunning) {
     server.handleClient();
   }
 
+  // 1. Read incoming bytes from DSO-152 over Serial1 (GPIO20/21)
   while (Serial1.available()) {
-    String line = Serial1.readStringUntil('\n');
-    line.trim();
-    if (line.startsWith("AT+")) {
-      processATCommand(line);
-    } else if (line.startsWith("$SCAN")) {
-      // Legacy quick scan compatibility
-      int n = WiFi.scanNetworks(false, false);
-      String out = "$NETS|";
-      int count = (n > 8) ? 8 : n;
-      for (int i = 0; i < count; i++) {
-        String s = WiFi.SSID(i);
-        s.replace(",", " "); s.replace(";", " ");
-        if (s.length() > 16) s = s.substring(0, 16);
-        out += s + "," + String(WiFi.RSSI(i)) + "," + String(WiFi.channel(i));
-        if (i + 1 < count) out += ";";
+    char c = (char)Serial1.read();
+    dbgRxBytes++;
+    if (c == '\n' || c == '\r') {
+      if (serial1Buf.length() > 0) {
+        handleIncomingLine(serial1Buf, "UART-DSO");
+        serial1Buf = "";
       }
-      WiFi.scanDelete();
-      sendReply(out);
+    } else if (serial1Buf.length() < 1500) {
+      serial1Buf += c;
     }
+  }
+
+  // 2. Also allow typing AT commands directly in the Arduino IDE USB Serial Monitor!
+  while (Serial.available()) {
+    char c = (char)Serial.read();
+    if (c == '\n' || c == '\r') {
+      if (usbSerialBuf.length() > 0) {
+        handleIncomingLine(usbSerialBuf, "USB-DBG");
+        usbSerialBuf = "";
+      }
+    } else if (usbSerialBuf.length() < 1500) {
+      usbSerialBuf += c;
+    }
+  }
+
+  // 3. Periodic 3-second debug heartbeat on USB Serial Monitor
+  if (millis() - lastBeatMs >= 3000) {
+    lastBeatMs = millis();
+    Serial.printf("[HEARTBEAT] Uptime=%lus | Serial1 RX=%lu bytes | Cmds=%lu | GPIO20(RX)=%d | WiFi=%s (%s)\n",
+                  (unsigned long)(millis() / 1000),
+                  (unsigned long)dbgRxBytes,
+                  (unsigned long)dbgCmdCount,
+                  digitalRead(PIN_DSO_RX),
+                  wifiStatusName(WiFi.status()),
+                  (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString().c_str() : "no-ip");
   }
 }

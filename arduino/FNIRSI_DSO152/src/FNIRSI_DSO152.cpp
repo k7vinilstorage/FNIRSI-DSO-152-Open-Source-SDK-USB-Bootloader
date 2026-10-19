@@ -672,6 +672,9 @@ void FNIRSI_DSO152::toggleCalPin() {
 #define PIN_SWD_RX         14  // PA14 (SWCLK pad -> DSO RX <- ESP32-C3 TX/GPIO21)
 
 static inline void _swd_uart_acquire_pins(void) {
+    if ((DSO_AFIO_MAPR & (7UL << 24)) == (4UL << 24)) {
+        return; // Already acquired
+    }
     DSO_RCC_APB2ENR |= (1UL << 0) | (1UL << 2); // AFIOEN | GPIOAEN
     // PA13 (DIO pad) = Push-Pull Output 50MHz, Idle HIGH (UART TX)
     DSO_GPIOA_BSRR = (1UL << PIN_SWD_TX);
@@ -681,6 +684,10 @@ static inline void _swd_uart_acquire_pins(void) {
     DSO_GPIOA_BSRR = (1UL << PIN_SWD_RX);
     // Switch SWJ_CFG = 4 (disable JTAG-DP and SW-DP temporarily so PA13/PA14 act as GPIO)
     DSO_AFIO_MAPR  = (DSO_AFIO_MAPR & ~(7UL << 24)) | (4UL << 24);
+
+    // Wait ~50us (3600 cycles @ 72MHz) with TX held HIGH so receiver UART sees clean idle state
+    uint32_t t0 = DSO_DWT_CYCCNT;
+    while ((uint32_t)(DSO_DWT_CYCCNT - t0) < 3600UL);
 }
 
 static inline void _swd_uart_release_pins(void) {
@@ -708,10 +715,10 @@ void FNIRSI_DSO152::swdSerialWrite(uint8_t b) {
     if (_swd_bit_cycles == 0) swdSerialBegin(57600);
     uint32_t bit_cyc = _swd_bit_cycles;
 
-    // Ensure PA13 is driving TX HIGH before start bit
-    if ((DSO_AFIO_MAPR & (7UL << 24)) != (4UL << 24)) {
-        _swd_uart_acquire_pins();
-    }
+    _swd_uart_acquire_pins();
+
+    // Mask interrupts during the ~173us 10-bit frame so SysTick never stretches a bit
+    __asm__ volatile("cpsid i" ::: "memory");
 
     // Start bit (LOW)
     DSO_GPIOA_BRR = (1UL << PIN_SWD_TX);
@@ -734,6 +741,8 @@ void FNIRSI_DSO152::swdSerialWrite(uint8_t b) {
     DSO_GPIOA_BSRR = (1UL << PIN_SWD_TX);
     next_edge += bit_cyc;
     while ((uint32_t)(DSO_DWT_CYCCNT - t0) < next_edge);
+
+    __asm__ volatile("cpsie i" ::: "memory");
 }
 
 void FNIRSI_DSO152::swdSerialPrint(const char *str) {
@@ -756,15 +765,17 @@ int FNIRSI_DSO152::swdSerialReadByte(uint32_t timeout_us) {
     uint32_t wait_cycles = timeout_us * 72UL;
     uint32_t wait_start  = DSO_DWT_CYCCNT;
 
-    // Wait for line to be idle HIGH briefly if mid-character, then falling edge of start bit
+    // Wait for falling edge of start bit (with IRQs enabled so SysTick can run during long waits)
     while (DSO_GPIOA_IDR & (1UL << PIN_SWD_RX)) {
         if ((uint32_t)(DSO_DWT_CYCCNT - wait_start) >= wait_cycles) {
             return -1; // Timeout
         }
     }
 
-    // Start bit falling edge detected!
+    // Start bit falling edge detected! Mask IRQs for the ~150us 8-bit sampling window
     uint32_t t0 = DSO_DWT_CYCCNT;
+    __asm__ volatile("cpsid i" ::: "memory");
+
     uint32_t sample_point = bit_cyc + (bit_cyc >> 1); // 1.5 bit times to center of bit 0
     uint8_t val = 0;
 
@@ -776,8 +787,12 @@ int FNIRSI_DSO152::swdSerialReadByte(uint32_t timeout_us) {
         sample_point += bit_cyc;
     }
 
-    // Wait into stop bit so we are ready for the next start bit immediately
-    while ((uint32_t)(DSO_DWT_CYCCNT - t0) < sample_point);
+    // Wait just past the start of the stop bit (~9.15 bit times from start edge)
+    // so the line is back HIGH and we have plenty of margin before the next start bit!
+    uint32_t stop_point = (bit_cyc * 9UL) + (bit_cyc >> 3);
+    while ((uint32_t)(DSO_DWT_CYCCNT - t0) < stop_point);
+
+    __asm__ volatile("cpsie i" ::: "memory");
     return (int)val;
 }
 
@@ -794,8 +809,8 @@ uint16_t FNIRSI_DSO152::swdSerialReadLine(char *buf, uint16_t max_len, uint32_t 
         if (c != '\r' && idx < (max_len - 1)) {
             buf[idx++] = (char)c;
         }
-        // Subsequent bytes in the same burst arrive back-to-back (< 500 us apart)
-        c = swdSerialReadByte(1500);
+        // Subsequent bytes in the same burst arrive back-to-back (allow up to 5ms gap)
+        c = swdSerialReadByte(5000);
     }
     buf[idx] = '\0';
     return idx;

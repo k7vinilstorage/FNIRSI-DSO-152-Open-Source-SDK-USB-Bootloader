@@ -77,14 +77,20 @@ String DSO152_WiFiClass::sendCommand(const char *cmd, uint32_t timeout_ms) {
 }
 
 bool DSO152_WiFiClass::isModemReady() {
-    String r = sendCommand("AT+PING", 400);
-    return r.startsWith("OK|PONG");
+    for (int attempt = 0; attempt < 2; attempt++) {
+        String r = sendCommand("AT+PING", 450);
+        if (r.indexOf("OK|PONG") >= 0) return true;
+        delay(20);
+    }
+    return false;
 }
 
 void DSO152_WiFiClass::_refreshStatus() {
     // Reply format: OK|<status>|<ip>|<ssid>|<rssi>|<ap_ip>|<mac>
     String r = sendCommand("AT+STATUS", 800);
-    if (!r.startsWith("OK|")) return;
+    int okPos = r.indexOf("OK|");
+    if (okPos < 0) return;
+    if (okPos > 0) r = r.substring(okPos);
 
     int p1 = r.indexOf('|');
     int p2 = r.indexOf('|', p1 + 1);
@@ -122,14 +128,14 @@ bool DSO152_WiFiClass::softAP(const char *ssid, const char *passphrase) {
     if (!_modem_init) initModem(57600);
     String cmd = "AT+AP=" + toHex(ssid) + "," + toHex(passphrase ? passphrase : "");
     String r = sendCommand(cmd.c_str(), 2500);
-    return r.startsWith("OK|");
+    return r.indexOf("OK|") >= 0;
 }
 
 bool DSO152_WiFiClass::startConfigPortal(const char *ap_ssid) {
     if (!_modem_init) initModem(57600);
     String cmd = "AT+PORTAL=" + toHex(ap_ssid ? ap_ssid : "DSO-152-Setup");
     String r = sendCommand(cmd.c_str(), 2500);
-    return r.startsWith("OK|");
+    return r.indexOf("OK|") >= 0;
 }
 
 void DSO152_WiFiClass::disconnect() {
@@ -181,8 +187,10 @@ int16_t DSO152_WiFiClass::scanNetworks() {
     if (!_modem_init) initModem(57600);
     _scan_count = 0;
     // Reply format: OK|<count>|<ssid_hex>,<rssi>,<ch>,<enc>;...
-    String r = sendCommand("AT+SCAN", 5000);
-    if (!r.startsWith("OK|")) return 0;
+    String r = sendCommand("AT+SCAN", 9000);
+    int okPos = r.indexOf("OK|");
+    if (okPos < 0) return 0;
+    if (okPos > 0) r = r.substring(okPos);
 
     int p1 = r.indexOf('|');
     int p2 = r.indexOf('|', p1 + 1);
@@ -360,16 +368,32 @@ bool DSO152_WiFiClass::selectNetworkUI() {
         dso.fillScreen(COLOR_BLACK);
         dso.fillRect(0, 0, 320, 24, COLOR_NAVY);
         dso.drawString(8, 8, "DSO-152 WI-FI CLIENT MANAGER", COLOR_WHITE, COLOR_NAVY, 1);
-        dso.drawString(16, 100, "Scanning 2.4 GHz Wi-Fi networks...", COLOR_CYAN, COLOR_BLACK, 1);
+        dso.drawString(16, 85, "Checking ESP32-C3 UART link (PA13/14)...", COLOR_CYAN, COLOR_BLACK, 1);
+        bool modemOk = isModemReady();
+        dso.drawString(16, 105, modemOk ? "Modem ONLINE! Scanning 2.4GHz Wi-Fi..." : "No Ping reply, trying AT+SCAN...",
+                       modemOk ? COLOR_GREEN : COLOR_YELLOW, COLOR_BLACK, 1);
 
         int16_t count = scanNetworks();
+        if (count > 0) modemOk = true;
         int sel = 0;
         DSO152_Buttons prev = dso.readButtons();
 
         auto drawList = [&]() {
             dso.fillRect(0, 24, 320, 190, COLOR_BLACK);
             if (count <= 0) {
-                dso.drawString(16, 90, "No networks found (or ESP32-C3 not wired).", COLOR_RED, COLOR_BLACK, 1);
+                if (modemOk) {
+                    dso.drawString(12, 55, "ESP32-C3 Modem : ONLINE (UART OK!)", COLOR_GREEN, COLOR_BLACK, 1);
+                    dso.drawString(12, 75, ("ESP32 MAC      : " + macAddress()).c_str(), COLOR_CYAN, COLOR_BLACK, 1);
+                    dso.drawString(12, 105, "Scan returned 0 2.4GHz networks.", COLOR_YELLOW, COLOR_BLACK, 1);
+                    dso.drawString(12, 125, "Press [RUN] to scan again.", COLOR_WHITE, COLOR_BLACK, 1);
+                } else {
+                    dso.drawString(12, 50, "ESP32-C3 Modem : NO REPLY (Timeout)", COLOR_RED, COLOR_BLACK, 1);
+                    dso.drawString(12, 78, "Check 4-wire SWD header connection:", COLOR_YELLOW, COLOR_BLACK, 1);
+                    dso.drawString(12, 98, "  DSO DIO (PA13) -> ESP32 RX (GPIO20)", COLOR_WHITE, COLOR_BLACK, 1);
+                    dso.drawString(12, 114, "  DSO CLK (PA14) -> ESP32 TX (GPIO21)", COLOR_WHITE, COLOR_BLACK, 1);
+                    dso.drawString(12, 130, "  DSO 3.3V & GND -> ESP32 3V3 & GND", COLOR_WHITE, COLOR_BLACK, 1);
+                    dso.drawString(12, 156, "Press [RUN] to retry.", COLOR_CYAN, COLOR_BLACK, 1);
+                }
             } else {
                 int showCount = (count > 7) ? 7 : count;
                 for (int i = 0; i < showCount; i++) {
