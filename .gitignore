@@ -1,0 +1,28 @@
+# Object files & archives
+*.o
+*.a
+*.elf
+*.map
+
+# Build directories
+build/
+
+# Editor & OS files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Bootloader intermediate files
+dso152_bootloader/*.elf
+dso152_bootloader/*.map
+dso152_bootloader/**/*.o
+
+# External / Legacy reference directories
+dso152-breakout/
+dso152_test_firmware/
+
+# Keep precompiled bootloader binary for easy SWD flashing
+!dso152_bootloader/dso152_bootloader.bin
