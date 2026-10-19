@@ -1,36 +1,39 @@
-# FNIRSI DSO-152 Open-Source SDK & USB Bootloader
+# FNIRSI DSO-152 Open-Source SDK, Arduino IDE Suite & USB Bootloader
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![MCU](https://img.shields.io/badge/MCU-CH32F103%20%2F%20STM32F103-orange.svg)](#hardware-specifications)
+[![MCU](https://img.shields.io/badge/MCU-AT32F403A%20%2F%20CH32F103%20%2F%20STM32F103-orange.svg)](#hardware-specifications)
+[![Arduino IDE](https://img.shields.io/badge/Arduino_IDE-Supported-00979D.svg)](docs/ARDUINO_IDE.md)
+[![FreeRTOS](https://img.shields.io/badge/FreeRTOS-Ready-brightgreen.svg)](docs/ARDUINO_IDE.md)
 [![Clock](https://img.shields.io/badge/Clock-72%20MHz-green.svg)](#hardware-specifications)
 [![Display](https://img.shields.io/badge/Display-ST7789%20320x240%20IPS-yellow.svg)](#hardware-specifications)
 
-A lightweight, bare-metal C Software Development Kit (**`libdso152`**) and native **USB Mass Storage Bootloader** for the **FNIRSI DSO-152** handheld digital oscilloscope.
+An open-source **Arduino IDE & FreeRTOS Library (`FNIRSI_DSO152`)**, bare-metal **C Software Development Kit (`libdso152`)**, and cross-platform **USB Mass Storage Bootloader (`DSO BOOT`)** for the **FNIRSI DSO-152** handheld digital oscilloscope.
 
-Turn your DSO-152 into an open platform for custom firmware, retro arcade games, signal generators, educational tools, and embedded development.
+Turn your DSO-152 into an open platform for custom firmware, multi-tasking FreeRTOS instruments, `Adafruit_GFX` applications, retro arcade games, signal generators, and embedded development.
 
 ---
 
 ## Features
 
-- **Drag-and-Drop USB Bootloader:**
+- **Cross-Platform Drag-and-Drop USB Bootloader (Linux, macOS & Windows):**
   - Emulates a FAT32 USB drive labeled **`DSO BOOT`** over the native USB-C port.
-  - Flash firmware by simply copying `.bin` or `.hex` files without needing an ST-Link.
+  - Works natively on **Linux (`vfat`)**, **macOS**, and **Windows** — supports both data-first (`DATA -> DIR`) and directory-first (`DIR -> DATA`) write orderings, plus FAT1/FAT2 mirror normalization.
+  - Flash firmware by simply copying `.bin` or `.hex` files (or clicking **Upload** in the Arduino IDE) without needing an ST-Link.
   - On-screen visual progress bar and automatic reboot.
-  - macOS/Linux hidden file (`._*`) immunity.
+  - macOS/Linux hidden metadata file (`._*`, `.Trash-*`) immunity.
   - Sub-millisecond fast-boot for application execution.
 
-- **Lightweight Bare-Metal SDK (`libdso152`):**
-  - **Zero heavy dependencies:** No bulky Arduino cores or bloated HALs. Pure CMSIS/register-level performance.
-  - **Power Management:** Soft power latch control (`PC10`), graceful power-button hold detection (`PC11`), and reboot to bootloader.
-  - **High-Performance Display Driver:** Full 16-bit 8080-II parallel interface on Port B with hardware-accelerated fills, primitives, text rendering, and rotation.
-  - **Responsive Input:** Full debounced polling for all 9 tactile pushbuttons.
-  - **Analog Front-End (AFE):** Complete control of input attenuation relay (`PA2`), AC/DC coupling (`PA3`), CD4051 gain multiplexer (`PA4..PA6`), 1 kHz calibration generator (`PA0`), and ADC1 DMA sampling (`PA1`).
-
 - **Arduino IDE & FreeRTOS Suite (`arduino/FNIRSI_DSO152`):**
-  - Full C++ Arduino library inheriting from **`Adafruit_GFX`** for rich graphics, fonts, and widgets.
+  - Full C++ Arduino library inheriting from **`Adafruit_GFX`** for rich graphics, custom fonts, and UI widgets.
   - Out-of-the-box compatibility with **`STM32duino FreeRTOS`** (`<STM32FreeRTOS.h>`) — automatically relocates `SCB->VTOR = 0x08004000`, latches battery power (`PC10`), and configures the 72 MHz HSE PLL clock before `HAL_Init()` / scheduler start.
   - One-click **Upload** directly from the Arduino IDE to the **`DSO BOOT`** USB drive (or via ST-Link SWD at `0x08004000`).
+
+- **Lightweight Bare-Metal C SDK (`libdso152`):**
+  - **Zero heavy dependencies:** Pure CMSIS/register-level performance (~4 KB footprint).
+  - **Power Management:** Soft power latch control (`PC10`), graceful power-button hold detection (`PC11`), and software reboot to USB bootloader.
+  - **High-Performance Display Driver:** Full 16-bit 8080-II parallel interface on Port B with hardware-accelerated fills, primitives, text rendering, and rotation.
+  - **Responsive Input:** Full debounced polling for all 9 tactile pushbuttons.
+  - **Analog Front-End (AFE):** Complete control of input attenuation relay (`PA2`), AC/DC coupling (`PA3`), HC4051 gain multiplexer (`PA4..PA6`), 1 kHz calibration generator (`PA0`), and 12-bit ADC1 sampling (`PA1`).
 
 ---
 
@@ -75,7 +78,24 @@ Turn your DSO-152 into an open platform for custom firmware, retro arcade games,
 
 ## Quick Start
 
-### 1. Prerequisites
+### Option A: Using the Arduino IDE (with `Adafruit_GFX` & `FreeRTOS`)
+
+1. Clone the repository and run the Arduino IDE installer script:
+   ```bash
+   git clone https://github.com/k7vinilstorage/FNIRSI-DSO-152-Open-Source-SDK-USB-Bootloader.git
+   cd FNIRSI-DSO-152-Open-Source-SDK-USB-Bootloader
+   ./arduino/install_arduino_ide.sh
+   ```
+2. In the Arduino IDE:
+   - Open **Tools -> Board -> Boards Manager...** and install **`STM32 MCU based boards`** (the Boards Manager URL is added automatically by the installer script).
+   - Open **Tools -> Manage Libraries...** and install **`Adafruit GFX Library`** and **`STM32duino FreeRTOS`**.
+   - Re-run `./arduino/install_arduino_ide.sh` once after installing the STM32 core to enable the **FNIRSI DSO-152** board profile and **`DSO BOOT`** one-click upload option.
+3. Open **File -> Examples -> FNIRSI DSO-152 -> `03_FreeRTOS_Oscilloscope`** and click **Upload**!
+   - Full details in **[docs/ARDUINO_IDE.md](docs/ARDUINO_IDE.md)**.
+
+### Option B: Building Bare-Metal C Projects (`Makefile` + `arm-none-eabi-gcc`)
+
+#### 1. Prerequisites
 
 Install the standard ARM GCC toolchain and Make:
 
@@ -94,12 +114,12 @@ Install the standard ARM GCC toolchain and Make:
   brew install --cask gcc-arm-embedded
   ```
 
-### 2. Building the SDK & Examples
+#### 2. Building the SDK & Examples
 
 Clone the repository and run `make`:
 ```bash
-git clone https://github.com/your-username/fnirsi-dso152-sdk.git
-cd fnirsi-dso152-sdk
+git clone https://github.com/k7vinilstorage/FNIRSI-DSO-152-Open-Source-SDK-USB-Bootloader.git
+cd FNIRSI-DSO-152-Open-Source-SDK-USB-Bootloader
 make
 ```
 

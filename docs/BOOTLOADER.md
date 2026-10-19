@@ -132,11 +132,27 @@ pyocd flash -t stm32f103c8 --base-address 0x08000000 dso152_bootloader.bin
 
 ---
 
-## 5. macOS and Linux Hidden File Protection
+## 5. Cross-Platform Linux, macOS & Windows FAT32 Engine
 
-Modern operating systems often write auxiliary metadata files when mounting FAT drives (e.g., `._example.bin` on macOS or `.Trash-1000` on Linux). 
+Many stock virtual-FAT USB bootloaders only work under Windows because Windows writes the **FAT32 Root Directory entry first** (telling the bootloader the file's starting cluster and byte size) before sending the file's data sectors.
 
-The DSO-152 bootloader FAT32 parser specifically validates all directory writes:
-- Files starting with `.` (dot) or `0xE5` (deleted entry) are ignored.
-- Only files with valid `.BIN` or `.HEX` extensions trigger the flash erase and write routines.
-- This prevents firmware corruption caused by OS metadata files.
+By contrast, the **Linux kernel `vfat` driver** and **macOS Finder** frequently:
+1. Write the **file data sectors first** (into clusters `>= 3`) while holding the directory entry in the OS page cache.
+2. Read and compare **both `FAT1` and `FAT2` tables** before mounting or committing data.
+3. Create **zero-byte placeholder entries** (`open(O_CREAT)`) before writing data, and flush the final directory entry with the true `file_size` and `first_cluster` only on `close()` / `sync`.
+4. Write hidden metadata files (`._*`, `.Trash-1000`, `.xdg-volume-info`).
+
+The DSO-152 open-source bootloader (`dso152_bootloader/Src/fat32.c`) solves all of these at the block layer:
+- **Order-Independent Flashing (`DIR -> DATA` and `DATA -> DIR`):**
+  - If the host OS writes **data sectors before the directory entry** (Linux default), the bootloader inspects the first words of the incoming stream for a valid ARM Cortex-M vector table (`SP` in `0x20000000..0x20010000`, `Reset_Handler` in `0x08004000..0x08040000`) or Intel HEX header (`:`), erases pages on-demand, and streams the sectors directly into Flash starting at `0x08004000`. When the directory entry arrives later (or after a short idle timeout), the transfer is finalized and the device reboots.
+  - If the host OS writes the **directory entry first** (Windows default), the bootloader records the target cluster range and size, flashes the incoming sectors as they arrive, and reboots as soon as all bytes are received.
+- **FAT1 / FAT2 Mirror Normalization:** Reads to both FAT1 (`0x00004000`) and FAT2 (`0x00403000`) return identical valid cluster chains so Linux `vfat` never remounts the volume read-only.
+- **Hidden/Metadata File Immunity:** Directory entries beginning with `.` (`0x2E`), `._`, or `0xE5` (deleted) are ignored so macOS and Linux desktop indexers never corrupt Flash.
+
+---
+
+## 6. One-Click Upload from Arduino IDE
+
+In addition to drag-and-drop via your file manager or `cp`, the **`DSO BOOT`** USB bootloader integrates directly with the **Arduino IDE Upload button**:
+- Select **Tools -> Upload method: "FNIRSI DSO-152 USB Drive (DSO BOOT @ 0x08004000)"**
+- See [docs/ARDUINO_IDE.md](ARDUINO_IDE.md) for full details.
