@@ -344,8 +344,12 @@ static uint32_t last_write_time = 0;
 
 bool fat32_is_flashed(void)
 {
-    if (bin_flashed) return true;
-    if (ihex_is_eof()) return true;
+    // Wait at least 400ms after the last USB sector write so the host OS (Linux vfat)
+    // finishes flushing FAT2 / FSInfo sectors before SystemReset() disconnects USB.
+    if ((bin_flashed || ihex_is_eof()) && (HAL_GetTick() - last_write_time > 400))
+    {
+        return true;
+    }
 
     // Timeout fallback: if at least 512 bytes were written,
     // and no writes received for >1000ms, check if valid firmware is present in flash

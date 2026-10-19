@@ -66,7 +66,51 @@ if [ -z "$MOUNT_DIR" ] || [ ! -d "$MOUNT_DIR" ]; then
 fi
 
 echo "[*] Found DSO BOOT drive at: $MOUNT_DIR"
-echo "[*] Copying firmware.bin..."
-cp "$BIN_FILE" "$MOUNT_DIR/firmware.bin"
-sync
-echo "[+] Upload complete! The DSO-152 will now reboot into your Arduino sketch."
+echo "[*] Flashing firmware.bin to DSO-152..."
+
+# Helper to check if the DSO-152 USB Bootloader (VID:PID 0483:572a) is still connected
+is_dso_boot_usb_present() {
+    if command -v lsusb >/dev/null 2>&1; then
+        lsusb -d 0483:572a >/dev/null 2>&1
+        return $?
+    fi
+    [ -d "$MOUNT_DIR" ]
+}
+
+# Run the copy+fsync in a detached background subshell (with stdio redirected to /dev/null
+# so arduino-cli does not block on open pipes if the DSO-152 auto-reboots before Linux
+# finishes flushing the backup FAT table).
+(
+    dd if="$BIN_FILE" of="$MOUNT_DIR/firmware.bin" bs=4096 conv=fsync status=none 2>/dev/null || \
+    cp "$BIN_FILE" "$MOUNT_DIR/firmware.bin" 2>/dev/null
+    sync -f "$MOUNT_DIR/firmware.bin" 2>/dev/null || true
+) </dev/null >/dev/null 2>&1 &
+COPY_PID=$!
+
+# Wait until either the copy finishes OR the DSO-152 bootloader finishes flashing and
+# disconnects USB (0483:572a disappears when SystemReset() boots the new sketch).
+elapsed=0
+while kill -0 "$COPY_PID" 2>/dev/null; do
+    if ! is_dso_boot_usb_present; then
+        echo "[+] DSO-152 finished flashing and rebooted into your sketch!"
+        exit 0
+    fi
+    sleep 0.2
+    elapsed=$((elapsed + 1))
+    if [ "$elapsed" -ge 50 ]; then
+        # 10s safety cap so Arduino IDE never hangs if kernel vfat cache stalls on reboot
+        echo "[+] Firmware sent! DSO-152 is rebooting into your sketch."
+        exit 0
+    fi
+done
+
+# Give the bootloader a moment to detect EOF and trigger auto-reboot
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    if ! is_dso_boot_usb_present; then
+        break
+    fi
+    sleep 0.2
+done
+
+echo "[+] Upload complete! The DSO-152 has rebooted into your Arduino sketch."
+exit 0
