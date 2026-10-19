@@ -627,9 +627,9 @@ bool fat32_write(const uint8_t *b, uint32_t addr)
                 if (file_offset < APP_SIZE)
                 {
                     uint16_t chunk = FAT32_SECTOR_SIZE;
-                    if (bin_total_size > 0 && (file_offset + chunk > bin_total_size))
+                    if ((file_offset + chunk) > APP_SIZE)
                     {
-                        chunk = bin_total_size - file_offset;
+                        chunk = APP_SIZE - file_offset;
                     }
                     _fat32_write_firmware_bytes(APP_ADDR + file_offset, b, chunk);
                     
