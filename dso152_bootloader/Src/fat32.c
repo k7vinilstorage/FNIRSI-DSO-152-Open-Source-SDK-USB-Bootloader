@@ -209,46 +209,56 @@ static void _fat32_read_fsinfo2(uint8_t *b)
 // No need to gen bootcode
 
 // FAT32 table
-// Addr: 0x0022_F800 - 0x0023_1814
-// Addr: 0x0031_7C00 - 0x0031_9C14
+// Addr: 0x0022_F800 - 0x0023_1814 (FAT1)
+// Addr: 0x0031_7C00 - 0x0031_9C14 (FAT2)
 static void _fat32_read_fat_table(uint8_t *b, uint32_t addr)
 {
+    // If reading FAT2, map address back to FAT1
+    if (addr >= 0x317C00)
+    {
+        addr = addr - 0x317C00 + 0x22F800;
+    }
+
     uint32_t s_offset = (addr - 0x22F800) >> 2;
     uint32_t *b32 = (uint32_t*)b;
     uint32_t i;
     
-    if(addr == 0x22F800)    // FAT table start
+    if (addr == 0x22F800)    // FAT table start
     {
-        // 1MB
-        b32[0] = 0x0FFFFFF8;
-        b32[1] = 0xFFFFFFFF;
-        b32[2] = 0x0FFFFFFF;
-        b32[3] = 0x0FFFFFFF;
-        b32[4] = 0x0FFFFFFF;
+        b32[0] = 0x0FFFFFF8; // Media byte
+        b32[1] = 0xFFFFFFFF; // Clean / EOC
+        b32[2] = 0x0FFFFFFF; // Cluster 2 (Root Dir)
+        b32[3] = 0x0FFFFFFF; // Cluster 3
+        b32[4] = 0x0FFFFFFF; // Cluster 4
         
-        for(i=5; i<128; i++)
+        for (i = 5; i < 128; i++)
         {
-            b32[i] = s_offset + i +1;
+            b32[i] = s_offset + i + 1;
         }
     }
-    else if(addr == 0x231800)    // FAT table end
+    else if (addr == 0x231800) // FAT table end of used space (Cluster 2048..2052)
     {
-        for(i=0; i<4; i++)
+        for (i = 0; i < 4; i++)
         {
-            b32[i] = s_offset + i +1;
+            b32[i] = s_offset + i + 1;
         }
-        b32[4] = 0x0FFFFFFF;
-        for(i=5; i<128; i++)
+        b32[4] = 0x0FFFFFFF; // Cluster 2052
+        for (i = 5; i < 128; i++)
         {
-            b32[i] = 0x00000000;
+            b32[i] = 0x00000000; // Cluster 2053+ FREE!
+        }
+    }
+    else if (addr < 0x231800)
+    {
+        for (i = 0; i < 128; i++)
+        {
+            b32[i] = s_offset + i + 1;
         }
     }
     else
     {
-        for(i=0; i<128; i++)
-        {
-            b32[i] = s_offset + i +1;
-        }
+        // Any sector above 0x231800 contains free clusters (0x00000000)
+        memset(b, 0x00, FAT32_SECTOR_SIZE);
     }
 }
 
@@ -336,10 +346,17 @@ bool fat32_is_flashed(void)
 {
     if (bin_flashed) return true;
     if (ihex_is_eof()) return true;
-    if (bin_bytes_written >= 1024 && (HAL_GetTick() - last_write_time > 1200))
+
+    // Timeout fallback: if at least 512 bytes were written,
+    // and no writes received for >1000ms, check if valid firmware is present in flash
+    if (bin_bytes_written >= 512 && (HAL_GetTick() - last_write_time > 1000))
     {
         uint32_t sp = *(volatile uint32_t *)APP_ADDR;
-        if ((sp & 0x2FFE0000) == 0x20000000) {
+        uint32_t reset_vec = *(volatile uint32_t *)(APP_ADDR + 4);
+        if (((sp & 0x2FFE0000) == 0x20000000) &&
+            ((reset_vec & 1) == 1) &&
+            (reset_vec >= APP_ADDR && reset_vec < (APP_ADDR + APP_SIZE)))
+        {
             return true;
         }
     }
@@ -368,7 +385,8 @@ uint32_t fat32_get_total_size(void)
     return bin_total_size;
 }
 
-static bool _fat32_write_firmware(uint32_t phy_addr, const uint8_t *buf, uint8_t size)
+// Write up to 512 bytes (uint16_t size prevents 512%256=0 truncation)
+static bool _fat32_write_firmware_bytes(uint32_t phy_addr, const uint8_t *buf, uint16_t size)
 {
     bool return_status = true;
     HAL_StatusTypeDef status;
@@ -452,6 +470,11 @@ EXIT:
     return return_status;
 }
 
+static bool _ihex_write_cb(uint32_t phy_addr, const uint8_t *buf, uint8_t size)
+{
+    return _fat32_write_firmware_bytes(phy_addr, buf, (uint16_t)size);
+}
+
 //-------------------------------------------------------
 
 bool fat32_read(uint8_t *b, uint32_t addr)
@@ -473,7 +496,7 @@ bool fat32_read(uint8_t *b, uint32_t addr)
     {
         _fat32_read_fsinfo2(b);
     }
-    else if ((addr >= 0x22F800 && addr < 0x231A00) || (addr >= 0x317C00 && addr < 0x319E00))
+    else if (addr >= 0x22F800 && addr < FAT32_DIR_ENTRY_ADDR)
     {
         _fat32_read_fat_table(b, addr);
     }
@@ -508,7 +531,7 @@ bool fat32_write(const uint8_t *b, uint32_t addr)
     
     if (addr < FAT32_DIR_ENTRY_ADDR)
     {
-        // FAT tables or MBR - ignore
+        // MBR, BPB, FSInfo, FAT tables - ignore
     }
     else if (addr == FAT32_DIR_ENTRY_ADDR)
     {
@@ -519,20 +542,34 @@ bool fat32_write(const uint8_t *b, uint32_t addr)
             fat32_dir_entry_t *entry = (fat32_dir_entry_t*)b_offset;
             uint8_t *filename = entry->DIR_Name;
 
-            // Ignore deleted, empty, or hidden dot-files (. on macOS)
-            if (filename[0] == 0x00 || filename[0] == 0xE5 || filename[0] == '.')
+            // Ignore deleted, empty, or volume ID
+            if (filename[0] == 0x00 || filename[0] == 0xE5)
+            {
+                continue;
+            }
+            if (entry->DIR_Attr == FAT32_ATTR_LONG_NAME || (entry->DIR_Attr & FAT32_ATTR_VOLUME_ID))
             {
                 continue;
             }
 
-            if (filename[8] == 'B' && filename[9] == 'I' && filename[10] == 'N')
+            // Case-insensitive check for BIN or HEX
+            bool is_bin = ((filename[8] == 'B' || filename[8] == 'b') &&
+                           (filename[9] == 'I' || filename[9] == 'i') &&
+                           (filename[10] == 'N' || filename[10] == 'n'));
+
+            bool is_hex = ((filename[8] == 'H' || filename[8] == 'h') &&
+                           (filename[9] == 'E' || filename[9] == 'e') &&
+                           (filename[10] == 'X' || filename[10] == 'x'));
+
+            if (is_bin)
             {
                 uint32_t clus = (((uint32_t)entry->DIR_FstClusHI) << 16) | entry->DIR_FstClusLO;
                 if (clus >= 2)
                 {
                     bin_first_cluster = clus;
-                    is_bin_mode = true;
                 }
+                is_bin_mode = true;
+
                 if (entry->DIR_FileSize > 0)
                 {
                     bin_total_size = entry->DIR_FileSize;
@@ -546,7 +583,7 @@ bool fat32_write(const uint8_t *b, uint32_t addr)
                     }
                 }
             }
-            else if (filename[8] == 'H' && filename[9] == 'E' && filename[10] == 'X')
+            else if (is_hex)
             {
                 is_bin_mode = false;
                 ihex_reset_state();
@@ -555,21 +592,43 @@ bool fat32_write(const uint8_t *b, uint32_t addr)
     }
     else
     {
-        if (is_bin_mode && bin_first_cluster >= 2)
+        // Data cluster write: addr >= 0x00400200
+        uint32_t cluster = 2 + (addr - FAT32_DIR_ENTRY_ADDR) / FAT32_SECTOR_SIZE;
+
+        // Auto-detect mode on first data cluster if directory entry hasn't arrived yet (Linux write order)
+        if (bin_first_cluster == 0)
         {
-            uint32_t cluster = 2 + (addr - FAT32_DIR_ENTRY_ADDR) / FAT32_SECTOR_SIZE;
+            if (b[0] == ':')
+            {
+                is_bin_mode = false;
+                bin_first_cluster = cluster;
+            }
+            else
+            {
+                is_bin_mode = true;
+                bin_first_cluster = cluster;
+            }
+        }
+
+        if (is_bin_mode)
+        {
             if (cluster >= bin_first_cluster)
             {
                 uint32_t file_offset = (cluster - bin_first_cluster) * FAT32_SECTOR_SIZE;
                 if (file_offset < APP_SIZE)
                 {
-                    uint32_t chunk = FAT32_SECTOR_SIZE;
+                    uint16_t chunk = FAT32_SECTOR_SIZE;
                     if (bin_total_size > 0 && (file_offset + chunk > bin_total_size))
                     {
                         chunk = bin_total_size - file_offset;
                     }
-                    _fat32_write_firmware(APP_ADDR + file_offset, b, chunk);
-                    bin_bytes_written += chunk;
+                    _fat32_write_firmware_bytes(APP_ADDR + file_offset, b, chunk);
+                    
+                    uint32_t current_written = file_offset + chunk;
+                    if (current_written > bin_bytes_written)
+                    {
+                        bin_bytes_written = current_written;
+                    }
                     st7789_boot_update_progress(bin_bytes_written, bin_total_size ? bin_total_size : APP_SIZE);
                     if (bin_total_size > 0 && bin_bytes_written >= bin_total_size)
                     {
@@ -580,7 +639,7 @@ bool fat32_write(const uint8_t *b, uint32_t addr)
         }
         else
         {
-            ihex_set_callback_func(_fat32_write_firmware);
+            ihex_set_callback_func(_ihex_write_cb);
             ihex_parser(b, FAT32_SECTOR_SIZE);
             if (ihex_is_eof())
             {
