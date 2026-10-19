@@ -90,6 +90,48 @@ static void _dso152_early_boot_hook(void) {
 extern "C" {
 void hw_config_init(void);
 
+// Override STM32duino's weak Reset_Handler so that even if a 48KB/64KB SRAM board
+// variant is selected (or cached by Arduino IDE), MSP is clamped to 0x20004FF0
+// (within the DSO-152's physical 20 KB SRAM, below the 0x20004FFC bootloader key)
+// BEFORE the very first stack push instruction!
+__attribute__((naked)) void Reset_Handler(void) {
+    __asm__ volatile (
+        ".syntax unified            \n"
+        "ldr r0, =0x20004FF0        \n"
+        "mov r1, sp                 \n"
+        "cmp r1, r0                 \n"
+        "it hi                      \n"
+        "movhi sp, r0               \n"
+        "bl SystemInit              \n"
+        "ldr r0, =_sdata            \n"
+        "ldr r1, =_edata            \n"
+        "ldr r2, =_sidata           \n"
+        "movs r3, #0                \n"
+        "b 2f                       \n"
+        "1:                         \n"
+        "ldr r4, [r2, r3]           \n"
+        "str r4, [r0, r3]           \n"
+        "adds r3, r3, #4            \n"
+        "2:                         \n"
+        "adds r4, r0, r3            \n"
+        "cmp r4, r1                 \n"
+        "bcc 1b                     \n"
+        "ldr r2, =_sbss             \n"
+        "ldr r4, =_ebss             \n"
+        "movs r3, #0                \n"
+        "b 4f                       \n"
+        "3:                         \n"
+        "str r3, [r2]               \n"
+        "adds r2, r2, #4            \n"
+        "4:                         \n"
+        "cmp r2, r4                 \n"
+        "bcc 3b                     \n"
+        "bl __libc_init_array       \n"
+        "bl main                    \n"
+        "bx lr                      \n"
+    );
+}
+
 // Override STM32duino's weak init() so VTOR and PC10 power latch are configured
 // strictly BEFORE hw_config_init() / HAL_Init() enables SysTick interrupts.
 void init(void) {
@@ -629,32 +671,47 @@ void FNIRSI_DSO152::toggleCalPin() {
 #define PIN_SWD_TX         13  // PA13 (SWDIO pad -> DSO TX -> ESP32-C3 RX/GPIO20)
 #define PIN_SWD_RX         14  // PA14 (SWCLK pad -> DSO RX <- ESP32-C3 TX/GPIO21)
 
+static inline void _swd_uart_acquire_pins(void) {
+    DSO_RCC_APB2ENR |= (1UL << 0) | (1UL << 2); // AFIOEN | GPIOAEN
+    // PA13 (DIO pad) = Push-Pull Output 50MHz, Idle HIGH (UART TX)
+    DSO_GPIOA_BSRR = (1UL << PIN_SWD_TX);
+    DSO_GPIOA_CRH  = (DSO_GPIOA_CRH & ~(0xFUL << ((PIN_SWD_TX - 8) * 4))) | (0x3UL << ((PIN_SWD_TX - 8) * 4));
+    // PA14 (CLK pad) = Input with Pull-Up (mode 0x8, ODR=1) (UART RX)
+    DSO_GPIOA_CRH  = (DSO_GPIOA_CRH & ~(0xFUL << ((PIN_SWD_RX - 8) * 4))) | (0x8UL << ((PIN_SWD_RX - 8) * 4));
+    DSO_GPIOA_BSRR = (1UL << PIN_SWD_RX);
+    // Switch SWJ_CFG = 4 (disable JTAG-DP and SW-DP temporarily so PA13/PA14 act as GPIO)
+    DSO_AFIO_MAPR  = (DSO_AFIO_MAPR & ~(7UL << 24)) | (4UL << 24);
+}
+
+static inline void _swd_uart_release_pins(void) {
+    // Return PA13 & PA14 to Input with Pull-Up (Idle HIGH for UART, safe for SWD)
+    DSO_GPIOA_BSRR = (1UL << PIN_SWD_TX) | (1UL << PIN_SWD_RX);
+    DSO_GPIOA_CRH  = (DSO_GPIOA_CRH & ~((0xFUL << ((PIN_SWD_TX - 8) * 4)) | (0xFUL << ((PIN_SWD_RX - 8) * 4))))
+                   | (0x8UL << ((PIN_SWD_TX - 8) * 4)) | (0x8UL << ((PIN_SWD_RX - 8) * 4));
+    // Restore SWJ_CFG = 2 (JTAG-DP disabled, SW-DP enabled so ST-Link can always connect!)
+    DSO_AFIO_MAPR  = (DSO_AFIO_MAPR & ~(7UL << 24)) | (2UL << 24);
+}
+
 void FNIRSI_DSO152::swdSerialBegin(uint32_t baud) {
     if (baud == 0) baud = 57600;
     _swd_bit_cycles = 72000000UL / baud;
 
-    // 1. Enable ARM Cortex-M3 DWT 72 MHz hardware cycle counter
+    // Enable ARM Cortex-M3 DWT 72 MHz hardware cycle counter
     DSO_DEMCR    |= 0x01000000UL; // TRCENA
     DSO_DWT_CTRL |= 1UL;          // CYCCNTENA
 
-    // 2. Disable both JTAG-DP and SW-DP (SWJ_CFG = 100b = 4) so PA13 & PA14 become GPIO
-    //    Note: The USB Bootloader at 0x08000000 leaves SWD enabled, so SWD still works
-    //    whenever the device is in bootloader mode!
-    DSO_RCC_APB2ENR |= (1UL << 0) | (1UL << 2); // AFIOEN | GPIOAEN
-    DSO_AFIO_MAPR = (DSO_AFIO_MAPR & ~(7UL << 24)) | (4UL << 24);
-
-    // 3. PA13 (DIO pad) = Push-Pull Output 50MHz, Idle HIGH (UART TX)
-    DSO_GPIOA_BSRR = (1UL << PIN_SWD_TX);
-    DSO_GPIOA_CRH  = (DSO_GPIOA_CRH & ~(0xFUL << ((PIN_SWD_TX - 8) * 4))) | (0x3UL << ((PIN_SWD_TX - 8) * 4));
-
-    // 4. PA14 (CLK pad) = Input with Pull-Up (mode 0x8, ODR=1) (UART RX)
-    DSO_GPIOA_CRH  = (DSO_GPIOA_CRH & ~(0xFUL << ((PIN_SWD_RX - 8) * 4))) | (0x8UL << ((PIN_SWD_RX - 8) * 4));
-    DSO_GPIOA_BSRR = (1UL << PIN_SWD_RX);
+    // Keep SW-DP enabled during idle; pins are acquired on-demand during transactions
+    _swd_uart_release_pins();
 }
 
 void FNIRSI_DSO152::swdSerialWrite(uint8_t b) {
     if (_swd_bit_cycles == 0) swdSerialBegin(57600);
     uint32_t bit_cyc = _swd_bit_cycles;
+
+    // Ensure PA13 is driving TX HIGH before start bit
+    if ((DSO_AFIO_MAPR & (7UL << 24)) != (4UL << 24)) {
+        _swd_uart_acquire_pins();
+    }
 
     // Start bit (LOW)
     DSO_GPIOA_BRR = (1UL << PIN_SWD_TX);
@@ -681,12 +738,14 @@ void FNIRSI_DSO152::swdSerialWrite(uint8_t b) {
 
 void FNIRSI_DSO152::swdSerialPrint(const char *str) {
     if (!str) return;
+    _swd_uart_acquire_pins();
     while (*str) {
         swdSerialWrite((uint8_t)*str++);
     }
 }
 
 void FNIRSI_DSO152::swdSerialPrintln(const char *str) {
+    _swd_uart_acquire_pins();
     swdSerialPrint(str);
     swdSerialWrite('\n');
 }
@@ -743,8 +802,11 @@ uint16_t FNIRSI_DSO152::swdSerialReadLine(char *buf, uint16_t max_len, uint32_t 
 }
 
 uint16_t FNIRSI_DSO152::swdSerialTransact(const char *tx_line, char *rx_buf, uint16_t rx_max_len, uint32_t timeout_ms) {
+    _swd_uart_acquire_pins();
     swdSerialPrintln(tx_line);
-    return swdSerialReadLine(rx_buf, rx_max_len, timeout_ms);
+    uint16_t len = swdSerialReadLine(rx_buf, rx_max_len, timeout_ms);
+    _swd_uart_release_pins();
+    return len;
 }
 
 /* ============================================================================

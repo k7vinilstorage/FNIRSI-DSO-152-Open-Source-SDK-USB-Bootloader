@@ -5,12 +5,12 @@
 # =============================================================================
 
 # 1. Dedicated Board Part Number under Tools -> Board: "Generic STM32F1 series"
-GenF1.menu.pnum.FNIRSI_DSO152=FNIRSI DSO-152 (AT32F403A / STM32F103RC)
-GenF1.menu.pnum.FNIRSI_DSO152.upload.maximum_size=245760
-GenF1.menu.pnum.FNIRSI_DSO152.upload.maximum_data_size=49152
-GenF1.menu.pnum.FNIRSI_DSO152.build.board=GENERIC_F103RCTX
-GenF1.menu.pnum.FNIRSI_DSO152.build.product_line=STM32F103xE
-GenF1.menu.pnum.FNIRSI_DSO152.build.variant=STM32F1xx/F103R(C-D-E)T
+GenF1.menu.pnum.FNIRSI_DSO152=FNIRSI DSO-152 (CH32F103R8 / STM32F103R8)
+GenF1.menu.pnum.FNIRSI_DSO152.upload.maximum_size=49152
+GenF1.menu.pnum.FNIRSI_DSO152.upload.maximum_data_size=20464
+GenF1.menu.pnum.FNIRSI_DSO152.build.board=GENERIC_F103R8TX
+GenF1.menu.pnum.FNIRSI_DSO152.build.product_line=STM32F103xB
+GenF1.menu.pnum.FNIRSI_DSO152.build.variant=STM32F1xx/F103R(8-B)T
 GenF1.menu.pnum.FNIRSI_DSO152.build.flash_offset=0x4000
 GenF1.menu.pnum.FNIRSI_DSO152.debug.svd_file={runtime.tools.STM32_SVD.path}/svd/STM32F1xx/STM32F103.svd
 
