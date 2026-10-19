@@ -304,6 +304,7 @@ FNIRSI_DSO152::FNIRSI_DSO152()
     _ac_coupling = false;
     _pwr_press_start = 0;
     _ok_press_start = 0;
+    _swd_bit_cycles = 0;
 }
 
 void FNIRSI_DSO152::begin(uint8_t default_rotation) {
@@ -616,6 +617,134 @@ void FNIRSI_DSO152::toggleCalPin() {
     } else {
         DSO_GPIOA_BSRR = (1UL << PIN_CAL_OUT);
     }
+}
+
+/* ============================================================================
+ * SWD Header UART Bridge (PA13/DIO = DSO TX, PA14/CLK = DSO RX)
+ * Connects the 4-pin SWD header directly to an ESP32-C3 SuperMini (RX=20, TX=21)
+ * ============================================================================ */
+#define DSO_DEMCR          (*(volatile uint32_t*)0xE000EDFCUL)
+#define DSO_DWT_CTRL       (*(volatile uint32_t*)0xE0001000UL)
+#define DSO_DWT_CYCCNT     (*(volatile uint32_t*)0xE0001004UL)
+#define PIN_SWD_TX         13  // PA13 (SWDIO pad -> DSO TX -> ESP32-C3 RX/GPIO20)
+#define PIN_SWD_RX         14  // PA14 (SWCLK pad -> DSO RX <- ESP32-C3 TX/GPIO21)
+
+void FNIRSI_DSO152::swdSerialBegin(uint32_t baud) {
+    if (baud == 0) baud = 57600;
+    _swd_bit_cycles = 72000000UL / baud;
+
+    // 1. Enable ARM Cortex-M3 DWT 72 MHz hardware cycle counter
+    DSO_DEMCR    |= 0x01000000UL; // TRCENA
+    DSO_DWT_CTRL |= 1UL;          // CYCCNTENA
+
+    // 2. Disable both JTAG-DP and SW-DP (SWJ_CFG = 100b = 4) so PA13 & PA14 become GPIO
+    //    Note: The USB Bootloader at 0x08000000 leaves SWD enabled, so SWD still works
+    //    whenever the device is in bootloader mode!
+    DSO_RCC_APB2ENR |= (1UL << 0) | (1UL << 2); // AFIOEN | GPIOAEN
+    DSO_AFIO_MAPR = (DSO_AFIO_MAPR & ~(7UL << 24)) | (4UL << 24);
+
+    // 3. PA13 (DIO pad) = Push-Pull Output 50MHz, Idle HIGH (UART TX)
+    DSO_GPIOA_BSRR = (1UL << PIN_SWD_TX);
+    DSO_GPIOA_CRH  = (DSO_GPIOA_CRH & ~(0xFUL << ((PIN_SWD_TX - 8) * 4))) | (0x3UL << ((PIN_SWD_TX - 8) * 4));
+
+    // 4. PA14 (CLK pad) = Input with Pull-Up (mode 0x8, ODR=1) (UART RX)
+    DSO_GPIOA_CRH  = (DSO_GPIOA_CRH & ~(0xFUL << ((PIN_SWD_RX - 8) * 4))) | (0x8UL << ((PIN_SWD_RX - 8) * 4));
+    DSO_GPIOA_BSRR = (1UL << PIN_SWD_RX);
+}
+
+void FNIRSI_DSO152::swdSerialWrite(uint8_t b) {
+    if (_swd_bit_cycles == 0) swdSerialBegin(57600);
+    uint32_t bit_cyc = _swd_bit_cycles;
+
+    // Start bit (LOW)
+    DSO_GPIOA_BRR = (1UL << PIN_SWD_TX);
+    uint32_t t0 = DSO_DWT_CYCCNT;
+    uint32_t next_edge = bit_cyc;
+
+    // 8 data bits (LSB first)
+    for (uint8_t i = 0; i < 8; i++) {
+        while ((uint32_t)(DSO_DWT_CYCCNT - t0) < next_edge);
+        if (b & (1U << i)) {
+            DSO_GPIOA_BSRR = (1UL << PIN_SWD_TX);
+        } else {
+            DSO_GPIOA_BRR  = (1UL << PIN_SWD_TX);
+        }
+        next_edge += bit_cyc;
+    }
+
+    // Stop bit (HIGH)
+    while ((uint32_t)(DSO_DWT_CYCCNT - t0) < next_edge);
+    DSO_GPIOA_BSRR = (1UL << PIN_SWD_TX);
+    next_edge += bit_cyc;
+    while ((uint32_t)(DSO_DWT_CYCCNT - t0) < next_edge);
+}
+
+void FNIRSI_DSO152::swdSerialPrint(const char *str) {
+    if (!str) return;
+    while (*str) {
+        swdSerialWrite((uint8_t)*str++);
+    }
+}
+
+void FNIRSI_DSO152::swdSerialPrintln(const char *str) {
+    swdSerialPrint(str);
+    swdSerialWrite('\n');
+}
+
+int FNIRSI_DSO152::swdSerialReadByte(uint32_t timeout_us) {
+    if (_swd_bit_cycles == 0) swdSerialBegin(57600);
+    uint32_t bit_cyc = _swd_bit_cycles;
+    uint32_t wait_cycles = timeout_us * 72UL;
+    uint32_t wait_start  = DSO_DWT_CYCCNT;
+
+    // Wait for line to be idle HIGH briefly if mid-character, then falling edge of start bit
+    while (DSO_GPIOA_IDR & (1UL << PIN_SWD_RX)) {
+        if ((uint32_t)(DSO_DWT_CYCCNT - wait_start) >= wait_cycles) {
+            return -1; // Timeout
+        }
+    }
+
+    // Start bit falling edge detected!
+    uint32_t t0 = DSO_DWT_CYCCNT;
+    uint32_t sample_point = bit_cyc + (bit_cyc >> 1); // 1.5 bit times to center of bit 0
+    uint8_t val = 0;
+
+    for (uint8_t i = 0; i < 8; i++) {
+        while ((uint32_t)(DSO_DWT_CYCCNT - t0) < sample_point);
+        if (DSO_GPIOA_IDR & (1UL << PIN_SWD_RX)) {
+            val |= (uint8_t)(1U << i);
+        }
+        sample_point += bit_cyc;
+    }
+
+    // Wait into stop bit so we are ready for the next start bit immediately
+    while ((uint32_t)(DSO_DWT_CYCCNT - t0) < sample_point);
+    return (int)val;
+}
+
+uint16_t FNIRSI_DSO152::swdSerialReadLine(char *buf, uint16_t max_len, uint32_t timeout_ms) {
+    if (!buf || max_len == 0) return 0;
+    uint16_t idx = 0;
+
+    // Wait up to timeout_ms for the first byte of the reply
+    int c = swdSerialReadByte(timeout_ms * 1000UL);
+    while (c >= 0) {
+        if (c == '\n') {
+            break;
+        }
+        if (c != '\r' && idx < (max_len - 1)) {
+            buf[idx++] = (char)c;
+        }
+        // Subsequent bytes in the same burst arrive back-to-back (< 500 us apart)
+        c = swdSerialReadByte(1500);
+    }
+    buf[idx] = '\0';
+    return idx;
+}
+
+uint16_t FNIRSI_DSO152::swdSerialTransact(const char *tx_line, char *rx_buf, uint16_t rx_max_len, uint32_t timeout_ms) {
+    swdSerialPrintln(tx_line);
+    return swdSerialReadLine(rx_buf, rx_max_len, timeout_ms);
 }
 
 /* ============================================================================

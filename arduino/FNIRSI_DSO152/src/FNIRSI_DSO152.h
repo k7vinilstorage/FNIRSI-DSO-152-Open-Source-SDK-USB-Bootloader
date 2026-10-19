@@ -128,6 +128,20 @@ public:
     void setCalPin(bool high);
     void toggleCalPin();
 
+    /* --- SWD Header UART Bridge (PA13 = DSO TX -> ESP RX, PA14 = DSO RX <- ESP TX) --- */
+    /**
+     * @brief Repurpose the 4-pin SWD header (PA13/DIO = TX, PA14/CLK = RX) as a
+     *        cycle-accurate DWT hardware-timed UART link to an ESP32-C3 SuperMini.
+     * @param baud Baud rate (default 57600 for rock-solid immunity to RTOS ticks)
+     */
+    void swdSerialBegin(uint32_t baud = 57600);
+    void swdSerialWrite(uint8_t b);
+    void swdSerialPrint(const char *str);
+    void swdSerialPrintln(const char *str);
+    int  swdSerialReadByte(uint32_t timeout_us = 5000);
+    uint16_t swdSerialReadLine(char *buf, uint16_t max_len, uint32_t timeout_ms = 25);
+    uint16_t swdSerialTransact(const char *tx_line, char *rx_buf, uint16_t rx_max_len, uint32_t timeout_ms = 25);
+
     /* --- Display & Graphics Primitives (Adafruit_GFX Overrides + Direct Fast API) --- */
     void setRotation(uint8_t r);
     void invertDisplay(bool i);
@@ -175,6 +189,7 @@ private:
     bool _ac_coupling;
     uint32_t _pwr_press_start;
     uint32_t _ok_press_start;
+    uint32_t _swd_bit_cycles;
 
     void _initClocksAndGPIO();
     void _initLCD(uint8_t rotation);
