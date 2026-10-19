@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# =============================================================================
+# upload_dso_boot.sh
+# Arduino IDE Upload Helper for FNIRSI DSO-152 USB Bootloader ("DSO BOOT")
+# =============================================================================
+set -e
+
+BIN_FILE="$1"
+
+if [ -z "$BIN_FILE" ] || [ ! -f "$BIN_FILE" ]; then
+    echo "[DSO-152] Error: Compiled binary not found: $BIN_FILE"
+    exit 1
+fi
+
+echo "============================================================"
+echo " FNIRSI DSO-152 USB Bootloader Uploader (DSO BOOT)"
+echo " Binary : $BIN_FILE ($(stat -c%s "$BIN_FILE" 2>/dev/null || stat -f%z "$BIN_FILE") bytes)"
+echo "============================================================"
+
+# Locate mounted "DSO BOOT" drive across Linux & macOS
+MOUNT_DIR=""
+
+for candidate in \
+    "/run/media/$USER/DSO BOOT" \
+    "/media/$USER/DSO BOOT" \
+    "/media/DSO BOOT" \
+    "/mnt/DSO BOOT" \
+    "/Volumes/DSO BOOT"; do
+    if [ -d "$candidate" ]; then
+        MOUNT_DIR="$candidate"
+        break
+    fi
+done
+
+# Fallback: query lsblk on Linux
+if [ -z "$MOUNT_DIR" ] && command -v lsblk >/dev/null 2>&1; then
+    MOUNT_DIR=$(lsblk -o LABEL,MOUNTPOINT -nr 2>/dev/null | awk '/^DSO BOOT / {sub(/^DSO BOOT /, ""); print; exit}')
+fi
+
+if [ -z "$MOUNT_DIR" ] || [ ! -d "$MOUNT_DIR" ]; then
+    echo ""
+    echo "[!] 'DSO BOOT' USB drive is not mounted!"
+    echo "    To enter USB Bootloader mode on your FNIRSI DSO-152:"
+    echo "      1. Connect the DSO-152 via USB-C"
+    echo "      2. Hold the OK/MENU button while turning it on (or press MENU+AUTO in a sketch)"
+    echo "      3. Wait for the 'DSO BOOT' drive to mount on your computer, then click Upload again."
+    exit 1
+fi
+
+echo "[*] Found DSO BOOT drive at: $MOUNT_DIR"
+echo "[*] Copying firmware.bin..."
+cp "$BIN_FILE" "$MOUNT_DIR/firmware.bin"
+sync
+echo "[+] Upload complete! The DSO-152 will now reboot into your Arduino sketch."

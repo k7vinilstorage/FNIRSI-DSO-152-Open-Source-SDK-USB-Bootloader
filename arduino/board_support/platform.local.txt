@@ -1,0 +1,17 @@
+# =============================================================================
+# FNIRSI DSO-152 Upload Tools for STM32duino (Arduino_Core_STM32)
+# Copy this file to:
+#   ~/.arduino15/packages/STMicroelectronics/hardware/stm32/<version>/platform.local.txt
+# =============================================================================
+
+# Upload to mounted "DSO BOOT" USB Mass Storage Drive
+tools.dso152_usb.cmd=/bin/bash
+tools.dso152_usb.upload.params.verbose=
+tools.dso152_usb.upload.params.quiet=
+tools.dso152_usb.upload.pattern="{cmd}" "{runtime.platform.path}/upload_dso_boot.sh" "{build.path}/{build.project_name}.bin"
+
+# Upload via ST-Link SWD using pyOCD at 0x08004000 (preserves USB bootloader)
+tools.dso152_pyocd.cmd=/bin/bash
+tools.dso152_pyocd.upload.params.verbose=
+tools.dso152_pyocd.upload.params.quiet=
+tools.dso152_pyocd.upload.pattern="{cmd}" "{runtime.platform.path}/upload_dso_pyocd.sh" "{build.path}/{build.project_name}.bin"

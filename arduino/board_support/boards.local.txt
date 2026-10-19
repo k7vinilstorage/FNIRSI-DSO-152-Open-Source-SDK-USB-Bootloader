@@ -1,0 +1,29 @@
+# =============================================================================
+# FNIRSI DSO-152 Board & Upload Support for STM32duino (Arduino_Core_STM32)
+# Copy this file to:
+#   ~/.arduino15/packages/STMicroelectronics/hardware/stm32/<version>/boards.local.txt
+# =============================================================================
+
+# 1. Dedicated Board Part Number under Tools -> Board: "Generic STM32F1 series"
+GenF1.menu.pnum.FNIRSI_DSO152=FNIRSI DSO-152 (AT32F403A / STM32F103RC)
+GenF1.menu.pnum.FNIRSI_DSO152.upload.maximum_size=245760
+GenF1.menu.pnum.FNIRSI_DSO152.upload.maximum_data_size=49152
+GenF1.menu.pnum.FNIRSI_DSO152.build.board=GENERIC_F103RCTX
+GenF1.menu.pnum.FNIRSI_DSO152.build.product_line=STM32F103xE
+GenF1.menu.pnum.FNIRSI_DSO152.build.variant=STM32F1xx/F103R(C-D-E)T
+GenF1.menu.pnum.FNIRSI_DSO152.build.flash_offset=0x4000
+GenF1.menu.pnum.FNIRSI_DSO152.debug.svd_file={runtime.tools.STM32_SVD.path}/svd/STM32F1xx/STM32F103.svd
+
+# 2. One-Click Upload via "DSO BOOT" USB Mass Storage Drive (offset 0x4000)
+GenF1.menu.upload_method.dso152_usbMethod=FNIRSI DSO-152 USB Drive (DSO BOOT @ 0x08004000)
+GenF1.menu.upload_method.dso152_usbMethod.upload.protocol=dso152_usb
+GenF1.menu.upload_method.dso152_usbMethod.upload.tool=dso152_usb
+GenF1.menu.upload_method.dso152_usbMethod.upload.tool.default=dso152_usb
+GenF1.menu.upload_method.dso152_usbMethod.build.flash_offset=0x4000
+
+# 3. One-Click Upload via ST-Link + pyOCD (offset 0x4000, preserves bootloader)
+GenF1.menu.upload_method.dso152_pyocdMethod=FNIRSI DSO-152 ST-Link (pyOCD @ 0x08004000)
+GenF1.menu.upload_method.dso152_pyocdMethod.upload.protocol=dso152_pyocd
+GenF1.menu.upload_method.dso152_pyocdMethod.upload.tool=dso152_pyocd
+GenF1.menu.upload_method.dso152_pyocdMethod.upload.tool.default=dso152_pyocd
+GenF1.menu.upload_method.dso152_pyocdMethod.build.flash_offset=0x4000

@@ -1,0 +1,72 @@
+#######################################
+# Syntax Coloring Map For FNIRSI_DSO152
+#######################################
+
+#######################################
+# Datatypes (KEYWORD1)
+#######################################
+
+FNIRSI_DSO152	KEYWORD1
+DSO152_Buttons	KEYWORD1
+dso152_range_t	KEYWORD1
+dso	KEYWORD1
+
+#######################################
+# Methods and Functions (KEYWORD2)
+#######################################
+
+begin	KEYWORD2
+readButtons	KEYWORD2
+updatePowerButton	KEYWORD2
+powerOff	KEYWORD2
+setPowerLatch	KEYWORD2
+setBacklight	KEYWORD2
+rebootToBootloader	KEYWORD2
+setRange	KEYWORD2
+setCoupling	KEYWORD2
+getRangeName	KEYWORD2
+readADC	KEYWORD2
+readMillivolts	KEYWORD2
+captureWaveform	KEYWORD2
+setCalPin	KEYWORD2
+toggleCalPin	KEYWORD2
+fill	KEYWORD2
+drawPixel	KEYWORD2
+drawLine	KEYWORD2
+drawRect	KEYWORD2
+fillRect	KEYWORD2
+drawCircle	KEYWORD2
+fillCircle	KEYWORD2
+drawChar	KEYWORD2
+drawString	KEYWORD2
+setRotation	KEYWORD2
+
+#######################################
+# Constants (LITERAL1)
+#######################################
+
+AFE_RANGE_10mV	LITERAL1
+AFE_RANGE_20mV	LITERAL1
+AFE_RANGE_50mV	LITERAL1
+AFE_RANGE_100mV	LITERAL1
+AFE_RANGE_200mV	LITERAL1
+AFE_RANGE_500mV	LITERAL1
+AFE_RANGE_1V	LITERAL1
+AFE_RANGE_2V	LITERAL1
+AFE_RANGE_5V	LITERAL1
+AFE_RANGE_10V	LITERAL1
+AFE_RANGE_20V	LITERAL1
+COLOR_BLACK	LITERAL1
+COLOR_WHITE	LITERAL1
+COLOR_RED	LITERAL1
+COLOR_GREEN	LITERAL1
+COLOR_BLUE	LITERAL1
+COLOR_CYAN	LITERAL1
+COLOR_MAGENTA	LITERAL1
+COLOR_YELLOW	LITERAL1
+COLOR_ORANGE	LITERAL1
+COLOR_NAVY	LITERAL1
+COLOR_DARKBLUE	LITERAL1
+COLOR_GRAY	LITERAL1
+COLOR_DARKGRAY	LITERAL1
+COLOR_LIGHTGRAY	LITERAL1

@@ -27,28 +27,42 @@ Turn your DSO-152 into an open platform for custom firmware, retro arcade games,
   - **Responsive Input:** Full debounced polling for all 9 tactile pushbuttons.
   - **Analog Front-End (AFE):** Complete control of input attenuation relay (`PA2`), AC/DC coupling (`PA3`), CD4051 gain multiplexer (`PA4..PA6`), 1 kHz calibration generator (`PA0`), and ADC1 DMA sampling (`PA1`).
 
+- **Arduino IDE & FreeRTOS Suite (`arduino/FNIRSI_DSO152`):**
+  - Full C++ Arduino library inheriting from **`Adafruit_GFX`** for rich graphics, fonts, and widgets.
+  - Out-of-the-box compatibility with **`STM32duino FreeRTOS`** (`<STM32FreeRTOS.h>`) — automatically relocates `SCB->VTOR = 0x08004000`, latches battery power (`PC10`), and configures the 72 MHz HSE PLL clock before `HAL_Init()` / scheduler start.
+  - One-click **Upload** directly from the Arduino IDE to the **`DSO BOOT`** USB drive (or via ST-Link SWD at `0x08004000`).
+
 ---
 
 ## Directory Structure
 
 ```
-├── libdso152/               # Core SDK Library
+├── arduino/                 # Arduino IDE & FreeRTOS Support
+│   ├── FNIRSI_DSO152/       # Arduino Library (Adafruit_GFX + FreeRTOS ready)
+│   │   ├── src/             # FNIRSI_DSO152.h / FNIRSI_DSO152.cpp
+│   │   └── examples/        # 01_HelloWorld_GFX, 02_Breakout_Arduino, 03_FreeRTOS_Oscilloscope
+│   ├── board_support/       # STM32duino boards.local.txt, platform.local.txt & uploaders
+│   ├── FNIRSI_DSO152.zip    # Ready-to-import Arduino .ZIP library
+│   └── install_arduino_ide.sh # Automated installer for Arduino IDE
+│
+├── libdso152/               # Core Bare-Metal C SDK Library
 │   ├── include/             # Public SDK headers (dso152.h, dso152_hw.h, etc.)
 │   ├── src/                 # Hardware drivers (LCD, AFE, Buttons, Power Latch)
 │   ├── common/              # Linker script (dso152_app.ld), startup.c, Makefile.include
 │   └── Makefile             # Builds libdso152.a
 │
 ├── dso152_bootloader/       # USB Mass Storage Bootloader (16 KB partition)
-│   ├── Src/, Inc/           # USB MSC Class, FAT32 emulation, ST7789 UI
+│   ├── Src/, Inc/           # USB MSC Class, FAT32 emulation (Linux/macOS/Windows), ST7789 UI
 │   ├── flash_bootloader.sh  # SWD flashing script for OpenOCD
 │   └── Makefile             # Builds dso152_bootloader.bin
 │
-├── examples/                # Ready-to-flash example projects
+├── examples/                # Ready-to-flash bare-metal C example projects
 │   ├── 01_hello_world/      # System info, color swatches, graphic primitives & button tester
 │   ├── 02_breakout_game/    # Full 60 FPS Breakout arcade game
 │   └── 03_mini_oscilloscope/# Real-time oscilloscope with AFE range switching & triggering
 │
 ├── docs/                    # Technical & Reverse Engineering Documentation
+│   ├── ARDUINO_IDE.md       # Complete Arduino IDE & FreeRTOS setup and API guide
 │   ├── HARDWARE.md          # Schematics, CD4051 truth table, power latch architecture
 │   ├── PINOUT.md            # Complete GPIO mapping and SWD pinouts
 │   └── BOOTLOADER.md        # Bootloader mechanics and firmware flashing guide
@@ -156,15 +170,44 @@ SRCS = main.c
 include ../../libdso152/common/Makefile.include
 ```
 
+### Arduino IDE & FreeRTOS Quick Tour
+
+Install the Arduino library and board definitions with `./arduino/install_arduino_ide.sh`, then open **File -> Examples -> FNIRSI DSO-152**:
+
+```cpp
+#include <FNIRSI_DSO152.h>
+#include <STM32FreeRTOS.h>
+
+void TaskUI(void *pvParameters) {
+    for (;;) {
+        dso.updatePowerButton(true); // Hold PWR to shut down, Hold OK (2s) for DSO BOOT
+        dso.setCursor(20, 60);
+        dso.setTextColor(COLOR_CYAN, COLOR_BLACK);
+        dso.printf("Probe: %4lu mV\n", (unsigned long)dso.readMillivolts());
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+}
+
+void setup() {
+    dso.begin(1); // 320x240 Landscape, Adafruit_GFX ready
+    xTaskCreate(TaskUI, "UI", 256, NULL, 2, NULL);
+    vTaskStartScheduler();
+}
+
+void loop() {}
+```
+
+See [docs/ARDUINO_IDE.md](docs/ARDUINO_IDE.md) for the complete Arduino IDE, `Adafruit_GFX`, and `STM32duino FreeRTOS` setup guide.
+
 ---
 
 ## Hardware Specifications
 
 | Component | Specification |
 |---|---|
-| **Microcontroller** | WCH CH32F103C8T6 / ST STM32F103C8T6 (ARM Cortex-M3 @ 72 MHz) |
-| **Flash Memory** | 64 KB (16 KB Bootloader + 48 KB User App Space) |
-| **SRAM** | 20 KB |
+| **Microcontroller** | Artery AT32F403ARCT7 / WCH CH32F103 / ST STM32F103 (ARM Cortex-M3/M4 @ 72 MHz) |
+| **Flash Memory** | 64 KB – 256 KB (16 KB Bootloader + User App Space at `0x08004000`) |
+| **SRAM** | 20 KB – 48 KB |
 | **Display** | 2.8" IPS TFT, 320x240 RGB565, ST7789V Controller |
 | **Display Bus** | 16-bit 8080-II Parallel (`PB0`..`PB15`) |
 | **Buttons** | 9 tactile switches (Run, Auto, Mode, Menu, Up, Down, Left, Right, Power) |
@@ -177,6 +220,7 @@ include ../../libdso152/common/Makefile.include
 
 ## Documentation
 
+- [Arduino IDE & FreeRTOS Guide](docs/ARDUINO_IDE.md) - Full guide to using the Arduino IDE, `Adafruit_GFX`, `STM32duino FreeRTOS`, and one-click `DSO BOOT` uploads.
 - [Hardware & Circuit Architecture](docs/HARDWARE.md) - Deep dive into power latching, AFE gain tables, and reverse-engineered schematics.
 - [Pinout & GPIO Allocation](docs/PINOUT.md) - Complete table of pins, MCU functions, and SWD debug pads.
 - [USB Bootloader Guide](docs/BOOTLOADER.md) - Virtual FAT32 mechanics, flashing instructions, and SWD recovery.
