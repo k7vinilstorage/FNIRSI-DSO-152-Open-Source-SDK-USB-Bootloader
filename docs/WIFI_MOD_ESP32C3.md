@@ -1,6 +1,8 @@
-# ESP32-C3 SuperMini Wi-Fi Mod Guide (4-Wire SWD Header Method)
+# ESP32-C3 SuperMini Wi-Fi Client & Modem Bridge Guide (`<DSO152_WiFi.h>`)
 
-Now that the **`DSO BOOT` USB Bootloader** is installed on your FNIRSI DSO-152, the 4 SWD pads on the PCB (`VCC`, `GND`, `DIO/PA13`, `CLK/PA14`) are no longer needed for daily flashing. You can connect a tiny **ESP32-C3 SuperMini** directly to those 4 pads to give your oscilloscope **2.4 GHz Wi-Fi & BLE**!
+By connecting an **ESP32-C3 SuperMini** to the 4 SWD header pads inside the FNIRSI DSO-152 (`VCC`, `GND`, `DIO/PA13`, `CLK/PA14`), the ESP32-C3 acts as an **internal Wi-Fi / HTTPS / TCP / NTP modem co-processor**.
+
+**You only flash the ESP32-C3 SuperMini ONCE** with [`esp32c3_wifi_companion.ino`](../arduino/esp32c3_wifi_companion/esp32c3_wifi_companion.ino) and close the case! From then on, you do **all** Wi-Fi configuration, scanning, HTTP/HTTPS requests, and TCP sockets dynamically on the DSO-152 using **`#include <DSO152_WiFi.h>`**—with the exact same API style as standard ESP32 `WiFi.h`, `WiFiClient.h`, and `HTTPClient.h`!
 
 ---
 
@@ -25,49 +27,90 @@ Now that the **`DSO BOOT` USB Bootloader** is installed on your FNIRSI DSO-152, 
 | :--- | :--- | :---: | :--- | :--- |
 | **`VCC`** | Switched `3.3V` | $\rightarrow$ | **`3V3`** | Controlled by DSO-152 `PC10` power latch! Turns OFF automatically when DSO-152 shuts down. |
 | **`GND`** | `GND` | $\leftrightarrow$ | **`G` (`GND`)** | Common ground. |
-| **`DIO`** | `PA13` (`SWDIO`) | $\rightarrow$ | **`RX` (`GPIO20`)** | DSO-152 transmits waveforms & commands to ESP32-C3. |
-| **`CLK`** | `PA14` (`SWCLK`) | $\leftarrow$ | **`TX` (`GPIO21`)** | ESP32-C3 sends IP status, remote Web UI commands & Wi-Fi scan results to DSO-152. |
-
-> [!TIP]
-> **Power Rail Tip:** The companion firmware automatically sets `WiFi.setTxPower(WIFI_POWER_11dBm)` so the ESP32-C3 draws only ~90–110 mA during Wi-Fi transmission instead of 300 mA spikes. If you have a small **10 µF – 47 µF capacitor**, soldering it across `3V3` and `G` on the ESP32-C3 SuperMini makes the 3.3V rail even smoother.
->
-> **Important:** Do **not** connect USB-C power to the ESP32-C3 at the same time its `3V3` pin is wired to the DSO-152's `3.3V` pad (flash the ESP32-C3 over USB-C *before* soldering the `3V3` wire, or disconnect `3V3` while flashing the ESP32-C3).
+| **`DIO`** | `PA13` (`SWDIO`) | $\rightarrow$ | **`RX` (`GPIO20`)** | DSO-152 transmits commands & data to ESP32-C3. |
+| **`CLK`** | `PA14` (`SWCLK`) | $\leftarrow$ | **`TX` (`GPIO21`)** | ESP32-C3 returns responses, HTTP payloads, and socket data to DSO-152. |
 
 ---
 
-## 2. Flashing the Two Boards in Arduino IDE
+## 2. One-Time ESP32-C3 Modem Setup
 
-### Step A: Flash the ESP32-C3 SuperMini
 1. Open [`arduino/esp32c3_wifi_companion/esp32c3_wifi_companion.ino`](../arduino/esp32c3_wifi_companion/esp32c3_wifi_companion.ino) in the Arduino IDE.
-2. *(Optional)* At the top of the sketch, you can enter your home Wi-Fi `STA_SSID` and `STA_PASS` if you want it to join your home LAN in addition to broadcasting its own **`DSO-152-WiFi`** hotspot.
-3. Select **Tools -> Board -> esp32 -> `ESP32C3 Dev Module`**.
-4. Connect the ESP32-C3 SuperMini via USB-C and click **Upload**.
-
-### Step B: Flash the FNIRSI DSO-152
-1. Run `./arduino/install_arduino_ide.sh` from the repository root so the latest library and example are installed into `~/Arduino/libraries/FNIRSI_DSO152`.
-2. Open **File -> Examples -> FNIRSI DSO-152 -> `04_WiFi_Web_Oscilloscope`** ([`04_WiFi_Web_Oscilloscope.ino`](../arduino/FNIRSI_DSO152/examples/04_WiFi_Web_Oscilloscope/04_WiFi_Web_Oscilloscope.ino)).
-3. Select:
-   - **Board:** `Generic STM32F1 series`
-   - **Board part number:** `FNIRSI DSO-152 (AT32F403A / STM32F103RC)`
-   - **Upload method:** `FNIRSI DSO-152 USB Drive (DSO BOOT @ 0x08004000)`
-4. Put the DSO-152 into **`DSO BOOT`** mode (hold `OK` while turning on) and click **Upload**.
+2. Select **Tools -> Board -> esp32 -> `ESP32C3 Dev Module`** and click **Upload**.
+3. Wire the 4 pins (`3V3`, `G`, `RX/20`, `TX/21`) to the DSO-152 SWD pads and close the case—you never need to re-flash the ESP32-C3 again!
 
 ---
 
-## 3. Using the Wireless Web Oscilloscope & Wi-Fi Scanner
+## 3. Using `<DSO152_WiFi.h>` in Your DSO-152 Sketches
 
-### Mode 1: Wireless Web Oscilloscope (`http://192.168.4.1`)
-1. Turn on the DSO-152. The bottom status bar on the LCD will show **`Web: 192.168.4.1`** (or your home LAN IP if `STA_SSID` was configured) in green once the ESP32-C3 replies over `PA14`.
-2. On your phone or laptop, connect to the Wi-Fi network:
-   - **SSID:** `DSO-152-WiFi`
-   - **Password:** `dso152wifi`
-3. Open **`http://192.168.4.1`** in any web browser:
-   - View the live triggered waveform, `Vpp`, `Vavg`, Vertical Range, Coupling, and Timebase.
-   - Click **`Range +`**, **`Range -`**, **`Timebase Fast/Slow`**, **`AC / DC`**, **`RUN / HOLD`**, or **`AUTO SET`** in the browser to remotely switch the hardware relays and muxes on the DSO-152!
-   - Click **`Export CSV`** to download the captured waveform samples to your computer or phone.
+### Example 1: Dynamic `WiFi.begin()`, `HTTPClient` (HTTPS!), and `WiFiClient`
 
-### Mode 2: On-Screen 2.4 GHz Wi-Fi Scanner
-- Press the **`OK / MENU`** button briefly on the DSO-152 to switch to the **2.4 GHz Wi-Fi Scanner** screen:
-  - The DSO-152 sends `$SCAN` over `PA13` (`DIO`) to the ESP32-C3.
-  - The ESP32-C3 scans all 2.4 GHz channels and returns the top networks (`SSID`, `Channel`, `RSSI dBm`), which are rendered with color-coded signal bars directly on the DSO-152's 320x240 IPS display!
-  - Press **`RUN`** to rescan, or press **`OK / MENU`** again to return to the oscilloscope.
+```cpp
+#include <FNIRSI_DSO152.h>
+#include <DSO152_WiFi.h>
+
+void setup() {
+    dso.begin(1);
+
+    // 1. Connect dynamically from the DSO-152 (also saves to ESP32-C3 NVS Flash!)
+    //    Or call WiFi.selectNetworkUI() to pick a network on-screen with the buttons!
+    WiFi.begin("MyHomeWiFi", "MyPassword123");
+
+    if (WiFi.status() == WL_CONNECTED) {
+        dso.print("IP: ");
+        dso.println(WiFi.localIP());
+
+        // 2. Make HTTP or HTTPS (TLS) GET/POST requests directly!
+        HTTPClient http;
+        if (http.begin("https://wttr.in/?format=3")) {
+            if (http.GET() == 200) {
+                dso.println(http.getString());
+            }
+            http.end();
+        }
+
+        // 3. Or use raw TCP / SSL sockets just like on an ESP32!
+        WiFiClient client;
+        if (client.connect("example.com", 80)) {
+            client.print("GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n");
+            String response = client.readString();
+            client.stop();
+        }
+    }
+}
+
+void loop() {
+    dso.updatePowerButton(true);
+}
+```
+
+### Example 2: Interactive On-Screen Wi-Fi Picker & Virtual Keyboard
+
+Don't want to hardcode your Wi-Fi SSID/password in your sketch? Just call:
+
+```cpp
+WiFi.selectNetworkUI();
+```
+
+This opens a full interactive **Wi-Fi Network Scanner & On-Screen Virtual Keyboard** on the DSO-152's 320x240 IPS display:
+- Use **`UP` / `DOWN`** to pick a Wi-Fi network and press **`OK`**.
+- Use the D-Pad + **`OK`** to type the WPA2 password on the on-screen keyboard and press **`RUN`** to connect.
+- Once connected, the ESP32-C3 saves the credentials in its NVS Flash so future boots can simply call `WiFi.beginSaved()`!
+
+---
+
+## 4. `<DSO152_WiFi.h>` API Summary
+
+| Class / Method | Description |
+| :--- | :--- |
+| **`WiFi.begin(ssid, pass)`** | Connects to a 2.4 GHz Wi-Fi network and saves credentials in ESP32-C3 NVS. |
+| **`WiFi.beginSaved()`** | Connects using the last saved Wi-Fi credentials in ESP32-C3 NVS. |
+| **`WiFi.selectNetworkUI()`** | Launches the on-screen Wi-Fi scanner & virtual keyboard UI on the DSO-152 LCD. |
+| **`WiFi.startConfigPortal("DSO-Setup")`** | Starts a Captive Web Portal on the ESP32-C3 (`http://192.168.4.1`) to configure Wi-Fi from a phone. |
+| **`WiFi.softAP(ssid, pass)`** | Starts a Wi-Fi Access Point dynamically from your DSO-152 sketch. |
+| **`WiFi.status()`** | Returns `WL_CONNECTED` (`3`) or `WL_DISCONNECTED` (`6`). |
+| **`WiFi.localIP()` / `WiFi.SSID()` / `WiFi.RSSI()`** | Returns current IPv4 `String`, SSID `String`, and signal strength in `dBm`. |
+| **`WiFi.scanNetworks()`** | Scans 2.4 GHz networks; read results via `WiFi.SSID(i)`, `WiFi.RSSI(i)`, `WiFi.channel(i)`. |
+| **`WiFi.ping(host, port)`** | Measures TCP reachability/latency in milliseconds (`-1` on timeout). |
+| **`WiFi.getNTPTime(gmtOffsetSec)`** | Syncs via NTP and returns formatted `"YYYY-MM-DD HH:MM:SS"`. |
+| **`HTTPClient`** | `http.begin(url)` (supports `http://` and `https://`), `http.GET()`, `http.POST(body)`, `http.getString()`. |
+| **`WiFiClient`** | `client.connect(host, port)`, `client.connectSSL(host, 443)`, `client.print()`, `client.readString()`, `client.stop()`. |
